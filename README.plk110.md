@@ -1,8 +1,8 @@
 # Skyward · 一加 15（PLK110）移植与修复完整说明
 
-> 当前版本：**上游 v0.3.1 + PLK110 build 21**。保留 v19 的安全链、完整压缩字体和设备适配，增加触觉反馈、Wi-Fi 记忆/自动连接、静态启动首屏、本仓库 GitHub 云更新，以及 fastbootd 时序修复。
+> 当前版本：**上游 v0.3.1 + PLK110 build 22**。修复一加面板亮度初始化及调节，保留解密、触控、完整字体、触觉反馈、Wi-Fi 记忆/自动连接、静态启动首屏、GitHub 云更新及 fastbootd 时序修复。
 >
-> 下载见 [Releases](https://github.com/liyongshun114514/skyward/releases/latest)，本版说明见 [PLK110-V21.md](PLK110-V21.md)，来源仓库见 [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md)。
+> 下载见 [Releases](https://github.com/liyongshun114514/skyward/releases/latest)，本版说明见 [PLK110-V22.md](PLK110-V22.md)，来源仓库见 [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md)。
 >
 > **以下章节为 v16 历史记录，不是当前使用说明。** 字体子集命令和“振动不可用”等旧结论不得照用；完整字体打包以 PLK110-V18.md / PLK110-V20.md 为准。
 
