@@ -93,6 +93,9 @@ fn set_over(props: &dyn Props, config: &str, timeout: Duration) -> Result<()> {
     // only. fastbootd can have ended under a port that still says fastboot,
     // which the serving check tells of.
     if said.as_deref() == Some(config) && in_place.as_deref() == Some(config) {
+        if config == "none" {
+            wait_free(props, left(asked, timeout))?;
+        }
         if config == "fastboot" {
             fastboot::serving(props)?;
         }
@@ -323,6 +326,16 @@ mod tests {
         set_over(&init, "none", T).unwrap();
         assert_eq!(init.said(fastboot::SERVICE_PROP).as_deref(), Some("stopped"), "nothing mounts partitions while fastbootd may still write them");
         assert!(matches!(init.said("init.svc.adbd").as_deref(), None | Some("stopped")));
+    }
+
+    #[test]
+    fn a_port_already_down_still_waits_for_the_previous_service_to_end() {
+        let init = Init::in_fastboot();
+        init.props.borrow_mut().insert(CONFIG.to_string(), "none".to_string());
+        init.act("none");
+        set_over(&init, "none", T).unwrap();
+        assert_eq!(init.said(fastboot::SERVICE_PROP).as_deref(), Some("stopped"));
+        assert!(!init.writes.borrow().iter().any(|(name, _)| name == CONFIG));
     }
 
     #[test]

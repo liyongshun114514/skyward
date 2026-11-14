@@ -6,7 +6,7 @@ English | [简体中文](README.zh-CN.md)
 
 Skyward is a recovery written in Rust, from scratch.
 
-> **OnePlus 15 / PLK110 port · upstream 0.3.1** — [Device notes](README.plk110.md) · [Acknowledgements](ACKNOWLEDGEMENTS.md). The PLK110 v19 baseline decrypts successfully on the device; new features require their own on-device validation.
+> **OnePlus 15 / PLK110 port · upstream 0.3.1** — [Device notes](README.plk110.md) · [Acknowledgements](ACKNOWLEDGEMENTS.md). Includes the PLK110 v19 decryption fixes, haptics, remembered Wi-Fi and fork updates.
 
 <p align="center">
   <img src="assets/home.png" width="30%" alt="Home">

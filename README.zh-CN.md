@@ -6,7 +6,7 @@
 
 Skyward 是使用 Rust 编写的 recovery，从零开始编写。
 
-> **一加 15 / PLK110 移植版 · 上游 0.3.1** — [设备说明](README.plk110.md) · [来源致谢](ACKNOWLEDGEMENTS.md)。v19 基线已由用户确认实机解密成功；本轮新功能须单独实机验证。
+> **一加 15 / PLK110 移植版 · 上游 0.3.1** — [设备说明](README.plk110.md) · [来源致谢](ACKNOWLEDGEMENTS.md)。包含 PLK110 解密修复、线性马达、Wi-Fi 记忆与本仓库云更新。
 
 <p align="center">
   <img src="assets/home.png" width="30%" alt="首页">
