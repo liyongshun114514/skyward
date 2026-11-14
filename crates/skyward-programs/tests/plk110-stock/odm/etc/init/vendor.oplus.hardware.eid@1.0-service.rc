@@ -1,0 +1,13 @@
+service eid-1-0 /odm/bin/hw/vendor.oplus.hardware.eid@1.0-service
+    class hal
+    user  system
+    group system
+    interface aidl vendor.oplus.hardware.eid.IEidDevice/default
+    disabled
+    oneshot
+
+on property:ro.vendor.oplus.eid.lazy_mode=
+    start eid-1-0
+
+on property:ro.vendor.oplus.eid.lazy_mode=false
+    start eid-1-0

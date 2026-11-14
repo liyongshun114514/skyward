@@ -1,0 +1,5 @@
+service ostatsd /system_ext/bin/ostatsd
+    user system
+    group system readproc root media_rw
+    capabilities SYS_NICE
+    disabled

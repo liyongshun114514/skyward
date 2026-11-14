@@ -86,5 +86,9 @@ pub fn with_key_service<T>(work: impl FnOnce(&KeyMint) -> Result<T>) -> Result<T
         let service = KeyMint::open(&binder)?;
         work(&service)
     })();
-    done.map_err(|e| format!("{e:#}"))
+    done.map_err(|e| {
+        let why = format!("{e:#}");
+        crate::bootlog::line(format!("data could not be opened: {why}"));
+        why
+    })
 }

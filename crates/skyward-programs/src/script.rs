@@ -117,7 +117,11 @@ pub fn read(text: &str) -> Result<Script> {
                     option(program, &words).with_context(|| format!("line {number}, of the service {}", program.name))?;
                 }
                 Section::Action => script.actions.last_mut().expect("an on section has begun").commands.push(words),
-                Section::None => bail!("line {number}: {first} begins no section, and no section has begun"),
+                // Android init logs a line outside a section and keeps
+                // parsing. Vendors ship disabled services prefixed with
+                // // instead of #; these are not C++ comments, but neither
+                // should they prevent unrelated services from being read.
+                Section::None => {}
             },
         }
     }
@@ -395,8 +399,15 @@ mod tests {
     }
 
     #[test]
-    fn a_line_outside_any_section_is_refused() {
-        assert!(read("user system\n").is_err());
+    fn lines_outside_a_section_do_not_hide_the_services_after_them() {
+        let script = read("//move to odm to control project\n//service vendor.contexthub-default /vendor/bin/hw/android.hardware.contexthub-service.qmi\n//    class hal\nuser nobody\nservice keys /vendor/bin/keys\n    user system\n").unwrap();
+        assert_eq!(script.programs.len(), 1);
+        assert_eq!(script.programs[0].name, "keys");
+        assert_eq!(script.programs[0].user.as_deref(), Some("system"));
+    }
+
+    #[test]
+    fn malformed_supported_sections_are_reported() {
         assert!(read("service a\n").is_err(), "a service without its program");
         assert!(read("service a /a\n    user\n").is_err(), "a user line that names none");
         assert!(read("service a /a\n    setenv \"A\n").is_err(), "a quote left open");

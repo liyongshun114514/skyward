@@ -1,0 +1,7 @@
+# OPLUS_FEATURE_VENDOR_CLEAR
+# vendor.oplus.hardware.vendorclear HAL service, must be installed to
+# /vendor/etc/init so it survives GSI (Generic System Image) flashing.
+service oplus_vendor_clear /vendor/bin/hw/oplus_vendor_clear
+    class hal
+    user system
+    group system

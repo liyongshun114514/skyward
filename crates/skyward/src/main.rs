@@ -602,7 +602,10 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     told.extend(described.into_iter().filter(|name| !registering.contains(name)));
     if !told.is_empty() {
         secure::publish_descriptions(&told)?;
-        skyward_sys::kmsg(&format!("the service directory is told of {} of the phone's own services", told.len()))?;
+        bootlog::line(format!("the service directory is told of {} of the phone's own services", told.len()));
+        for name in told.iter().filter(|name| name.contains("supplicant")) {
+            bootlog::line(format!("the WLAN may register {name}"));
+        }
     }
     let libraries = secure::libraries()?;
     if let Some(dir) = &libraries {
@@ -620,7 +623,7 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     match found.context("make out from the phone's partitions how its keys are used") {
         Ok(steps) => {
             for line in keys::describe(&steps) {
-                skyward_sys::kmsg(&format!("for the phone's keys: {}", line.replace("\n  ", ", ")))?;
+                bootlog::line(format!("for the phone's keys: {}", line.replace("\n  ", ", ")));
             }
             if let Err(e) = keys::start(&steps, libraries.as_deref()) {
                 bootlog::line(format!("the phone's keys are not usable: {e:#}"));

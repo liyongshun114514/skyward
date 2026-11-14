@@ -1,0 +1,9 @@
+service vendor.qtvm.proxyclient-service /vendor/bin/vendor.qti.qtvm.proxyclient-service
+  class hal
+  user system
+  group system
+  oneshot
+
+# Weiwei.Wu@BSP.Secure.Basic 2026/02/06,add stop for product which not support qtvm
+on property:vendor.avf_qcvm.disabled=1
+  stop vendor.qtvm.proxyclient-service

@@ -1,0 +1,21 @@
+###############################################################################
+## Copyright (C), 2022-2032, OPLUS Mobile Comm Corp., Ltd
+##
+## File: vendor.oplus.hardware.olck_ca-service.rc
+## Description : add for olck ca hal service rc
+## Version: 1.0
+## Date : 2026/04/02
+## Author: sunyandong@NETWORK.BSP
+## ----------------- Revision History: ----------------------
+## <author>      <data>        <desc>
+## sunyandong     2026/04/02     create this file
+## sunyandong     2026/04/14     oom_score_adjust + task_profiles
+################################################################################
+
+service hal_olck_ca_oplus /odm/bin/hw/vendor.oplus.hardware.olck_ca-service
+    class hal
+    user system
+    group system radio
+    interface aidl vendor.oplus.hardware.olck_ca.IOlckCa/default
+    oom_score_adjust -1000
+    task_profiles ServiceCapacityHigh

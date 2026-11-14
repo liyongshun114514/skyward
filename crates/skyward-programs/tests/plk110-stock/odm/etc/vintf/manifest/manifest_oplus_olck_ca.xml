@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+ ** OPLUS_FEATURE_OLCK - standalone olck HAL manifest
+ ** Copyright (C), 2022-2032, OPLUS Mobile Comm Corp., Ltd
+-->
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>vendor.oplus.hardware.olck_ca</name>
+        <version>1</version>
+        <interface>
+            <name>IOlckCa</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+</manifest>

@@ -1,0 +1,28 @@
+on init
+#add for aizerofs
+    chown system system /dev/aizerofs
+    chmod 0644 /dev/aizerofs
+
+    chown system system /sys/module/oplus_bsp_aizerofs/parameters/enabled
+    chmod 0664 /sys/module/oplus_bsp_aizerofs/parameters/enabled
+    chown system system /sys/module/oplus_bsp_aizerofs/parameters/write_enabled
+    chmod 0664 /sys/module/oplus_bsp_aizerofs/parameters/write_enabled
+
+    chown system system /sys/kernel/aizerofs/bug_on
+    chmod 0664 /sys/kernel/aizerofs/bug_on
+# mm_osvelte: bad proc
+     chown system system /sys/kernel/oplus_mm/osvelte/common/add_bad_proc
+     chown system system /sys/kernel/oplus_mm/osvelte/common/enable_bad_proc
+
+service init_oplus_mm /vendor/bin/sh /odm/bin/init.oplus.mm-vnd.sh
+    class core
+    user root
+    group root system
+    disabled
+    oneshot
+
+on property:sys.boot_completed=1
+    start init_oplus_mm
+
+on post-fs-data
+    write /dev/cpuctl/mem/cpu.shares 2048

@@ -1,0 +1,25 @@
+service monitorOn /vendor/bin/sh /odm/bin/init.vendor.wifi.smart_antenna_switch.sh monitorOn
+    user root
+    group root system misc wifi
+    class late_start
+    disabled
+    oneshot
+
+service monitorOff /vendor/bin/sh /odm/bin/init.vendor.wifi.smart_antenna_switch.sh monitorOff
+    user root
+    group root system misc wifi
+    class late_start
+    disabled
+    oneshot
+
+on property:sys.oplus.wcn.beam.action=true
+    setprop vendor.oplus.wifi_smart_antenna 1
+
+on property:sys.oplus.wcn.beam.action=false
+    setprop vendor.oplus.wifi_smart_antenna 0
+
+on property:vendor.oplus.wifi_smart_antenna=1
+    start monitorOn
+
+on property:vendor.oplus.wifi_smart_antenna=0
+    start monitorOff

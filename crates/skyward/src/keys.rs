@@ -102,10 +102,14 @@ pub fn serves_elements(steps: &[Step]) -> bool {
 pub fn start(steps: &[Step], libraries: Option<&Path>) -> Result<()> {
     for step in steps {
         match step {
-            Step::Start(program) => crate::services::start(std::slice::from_ref(program.as_ref()), libraries)?,
+            Step::Start(program) => {
+                crate::bootlog::line(format!("starting key program {}", program.service.path));
+                crate::services::start(std::slice::from_ref(program.as_ref()), libraries)?;
+                crate::bootlog::line(format!("key program ready: {}", program.service.path));
+            }
             Step::ServeElements => {
                 let readers = skyward_omapi::start()?;
-                skyward_sys::kmsg(&format!("{} is served, with a reader for each of {} secure elements: {}", skyward_omapi::SERVICE, readers.len(), readers.join(", ")))?;
+                crate::bootlog::line(format!("{} is served, with a reader for each of {} secure elements: {}", skyward_omapi::SERVICE, readers.len(), readers.join(", ")));
             }
         }
     }

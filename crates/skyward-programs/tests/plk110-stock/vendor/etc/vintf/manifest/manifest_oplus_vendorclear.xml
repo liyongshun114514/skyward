@@ -1,0 +1,10 @@
+<!--
+    Input:
+        vendor/oplus/hardware/interface/vendorclear/service/manifest_oplus_vendorclear.xml
+-->
+<manifest version="9.0" type="device">
+    <hal format="aidl">
+        <name>vendor.oplus.hardware.vendorclear</name>
+        <fqname>IOplusVendorClear/default</fqname>
+    </hal>
+</manifest>

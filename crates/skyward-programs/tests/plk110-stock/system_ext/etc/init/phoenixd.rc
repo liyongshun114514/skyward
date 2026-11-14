@@ -1,0 +1,15 @@
+service phoenixd /system/system_ext/bin/phoenixd
+    class main
+    user root
+    group root system
+    disabled
+
+service phoenixd_sync /system/system_ext/bin/phoenixd sync
+    class main
+    user root
+    group root system
+    oneshot
+    disabled
+
+on property:sys.oplus.boot_completed=1
+    start phoenixd_sync

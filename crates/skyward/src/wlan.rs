@@ -336,7 +336,7 @@ impl Station {
                 self.command(Command::Scan);
             }
             Err(e) => {
-                let _ = skyward_sys::kmsg(&format!("the WLAN did not come up: {e:#}"));
+                crate::bootlog::line(format!("the WLAN did not come up: {e:#}"));
                 self.state.power = Power::Failed(format!("{e:#}"));
             }
         }

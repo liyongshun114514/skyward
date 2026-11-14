@@ -1,0 +1,7 @@
+service gameinference /odm/bin/hw/vendor.oplus.hardware.gameinference-service
+    class hal
+    user graphics
+    group graphics system camera media
+    interface aidl vendor.oplus.hardware.gameinference.IGameinferenceService/default
+    oneshot
+    disabled

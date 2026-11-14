@@ -1,0 +1,20 @@
+#Add for smartpa calibrate
+on boot
+    chown system audio /sys/bus/i2c/devices/0-0034/reg
+    chown system audio /sys/bus/i2c/devices/0-0034/rw
+    chmod 0220 /sys/bus/i2c/devices/0-0034/reg
+    chmod 0660 /sys/bus/i2c/devices/0-0034/rw
+    chown system audio /sys/bus/i2c/devices/0-0035/reg
+    chown system audio /sys/bus/i2c/devices/0-0035/rw
+    chmod 0220 /sys/bus/i2c/devices/0-0035/reg
+    chmod 0660 /sys/bus/i2c/devices/0-0035/rw
+    write /sys/devices/platform/soc/3000000.remoteproc-adsp/remoteproc/remoteproc0/coredump enabled
+    write /sys/devices/platform/soc/3000000.remoteproc-adsp/remoteproc/remoteproc0/recovery enabled
+    write /sys/devices/platform/soc/3000000.remoteproc-adsp/remoteproc/remoteproc1/coredump enabled
+    write /sys/devices/platform/soc/3000000.remoteproc-adsp/remoteproc/remoteproc1/recovery enabled
+    write /sys/devices/platform/soc/3000000.remoteproc-adsp/remoteproc/remoteproc2/coredump enabled
+    write /sys/devices/platform/soc/3000000.remoteproc-adsp/remoteproc/remoteproc2/recovery enabled
+    write /sys/devices/platform/soc/3000000.remoteproc-adsp/remoteproc/remoteproc3/coredump enabled
+    write /sys/devices/platform/soc/3000000.remoteproc-adsp/remoteproc/remoteproc3/recovery enabled
+    write /sys/devices/platform/soc/3000000.remoteproc-adsp/remoteproc/remoteproc4/coredump enabled
+    write /sys/devices/platform/soc/3000000.remoteproc-adsp/remoteproc/remoteproc4/recovery enabled
