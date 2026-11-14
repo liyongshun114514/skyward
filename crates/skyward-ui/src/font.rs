@@ -245,7 +245,20 @@ impl FontInfo {
 /// Read a font file for the life of the process: the faces borrow its bytes.
 fn leak(path: &Path) -> Result<&'static [u8]> {
     let bytes = std::fs::read(path).map_err(|e| anyhow!("read font {}: {e}", path.display()))?;
+    let bytes = decode_font(&bytes)?;
     Ok(Box::leak(bytes.into_boxed_slice()))
+}
+
+/// Recognize the content, not the file extension: ramdisk paths stay stable.
+fn decode_font(bytes: &[u8]) -> Result<Vec<u8>> {
+    if bytes.starts_with(b"\xfd7zXZ\0") {
+        let mut out = Vec::new();
+        lzma_rs::xz_decompress(&mut std::io::Cursor::new(bytes), &mut out)
+            .map_err(|e| anyhow!("decompress XZ font: {e}"))?;
+        Ok(out)
+    } else {
+        Ok(bytes.to_vec())
+    }
 }
 
 impl Fonts {
@@ -306,6 +319,17 @@ pub(crate) fn bundled() -> Fonts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compressed_fonts_roundtrip_and_corruption_is_reported() {
+        let data = include_bytes!("../../../resources/fonts/KirkMono-Regular.ttf");
+        let mut packed = Vec::new();
+        lzma_rs::xz_compress(&mut std::io::Cursor::new(data), &mut packed).unwrap();
+        assert_eq!(decode_font(&packed).unwrap(), data);
+        assert_eq!(decode_font(data).unwrap(), data);
+        packed.truncate(packed.len() / 2);
+        assert!(decode_font(&packed).is_err());
+    }
 
     #[test]
     fn a_line_is_as_tall_as_the_stock_search_fields_cursor() {

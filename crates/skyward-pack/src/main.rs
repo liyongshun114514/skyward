@@ -68,6 +68,10 @@ enum Cmd {
         /// The monospaced typeface's licence, which goes with it.
         #[arg(long)]
         mono_license: PathBuf,
+        /// Omit the replaced Oplus recovery UI's resources to make room for
+        /// a full typeface. No executables, policies or libraries are removed.
+        #[arg(long)]
+        omit_oplus_ui: bool,
         #[arg(long)]
         out: PathBuf,
     },
@@ -125,7 +129,7 @@ fn main() -> Result<()> {
             img.kernel = BootImage::read(&kernel)?.kernel;
             write(&out, &img, &img.to_bytes()?)
         }
-        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, out } => {
+        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, omit_oplus_ui, out } => {
             let size = partition_size(&stock)?;
             // The bootloader refuses an image whose vbmeta names a smaller
             // rollback index than the one it keeps for the slot, unlocked or
@@ -141,6 +145,9 @@ fn main() -> Result<()> {
             let read = |p: &PathBuf| std::fs::read(p).with_context(|| format!("read {}", p.display()));
             skyward_config::DeviceConfig::load(&config)?;
             rd.replace(paths::RECOVERY, read(&binary)?)?;
+            if omit_oplus_ui {
+                rd.entries.retain(|e| e.name != "res/OplusOS" && !e.name.starts_with("res/OplusOS/"));
+            }
             // Install scripts look for the commands a stock recovery lacks
             // among its programs, and its unzip there too, a link to ziptool
             // until it points here; the recovery binary is each of them.

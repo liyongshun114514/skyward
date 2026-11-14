@@ -28,6 +28,8 @@ skyward-vab = { path = "../skyward-vab" }
 svgtypes = "0.16.1"
 tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "simd"] }
 ttf-parser = "0.25.1"
+# Decode complete typefaces stored compactly in size-limited boot ramdisks.
+lzma-rs = "0.3.0"
 unicode-width = "0.2.2"
 vt100 = "0.18.1"
 

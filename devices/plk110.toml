@@ -20,7 +20,9 @@ sources = ["vendor_boot", "vendor_dlkm", "vendor", "system_dlkm"]
 # layer, which keeps the frames the panel sends in the kernel and hands them
 # to the phone's own touch service, whose input device the touches come in
 # on. Its dependencies come from modules.dep and load first.
-load = ["msm_drm", "qcom-hv-haptics", "oplus_hbp_core", "oplus_bsp_tp_hbp_syna_s3910"]
+# The eSE HAL probes /dev/nq-nci before it registers its Binder service.
+# Without nxp-nci, the Weaver chain cannot get past the secure element.
+load = ["msm_drm", "qcom-hv-haptics", "oplus_hbp_core", "oplus_bsp_tp_hbp_syna_s3910", "nxp-nci"]
 
 # The touch frames are turned into touches by the phone's own touch service,
 # which a recovery runs none of: without it the panel's input device stays
@@ -31,6 +33,14 @@ user = "system"
 group = "system"
 mode = 0o660
 paths = ["/dev/hbp0", "/dev/hbp_core", "/dev/tcm_hbp0"]
+
+# init.SN100x.nfc.rc gives the eSE/NFC controller to nfc:nfc, mode 0660;
+# secure_element-service.qti runs as system with nfc among its groups.
+[[owners]]
+user = "nfc"
+group = "nfc"
+mode = 0o660
+paths = ["/dev/nq-nci"]
 
 # The firmware of the WLAN chip and the apps the secure world loads for the
 # secure element's service are on the modem partition, which the phone

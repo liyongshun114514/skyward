@@ -2672,6 +2672,7 @@ dependencies = [
  "icu_locale_core",
  "jiff",
  "libc",
+ "lzma-rs",
  "png",
  "proc-macro2",
  "serde",
