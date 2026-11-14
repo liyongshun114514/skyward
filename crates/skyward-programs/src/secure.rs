@@ -80,8 +80,12 @@ const HARDWARE_DIRECTORY_READY: &str = "hwservicemanager.ready";
 /// the odm partition asks for that neither has. The directory for hardware
 /// services is the installed system's own program and runs on its
 /// libraries alone.
-const VENDOR_LIBRARIES: [&str; 2] = ["/system/lib64", "/vendor/lib64"];
-const ODM_LIBRARIES: [&str; 5] = ["/system/lib64", "/vendor/lib64", "/odm/lib64", "/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap"];
+// Some of a vendor HAL's direct dependencies live under hw, not beside
+// its other libraries (PLK110's eSE links libEseUtils.so from there).
+// A recovery's linker has no vendor namespace to supply these paths.
+// Keep the recovery's Binder/runtime libraries first as before.
+const VENDOR_LIBRARIES: [&str; 3] = ["/system/lib64", "/vendor/lib64", "/vendor/lib64/hw"];
+const ODM_LIBRARIES: [&str; 7] = ["/system/lib64", "/vendor/lib64", "/odm/lib64", "/vendor/lib64/hw", "/odm/lib64/hw", "/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap"];
 const SYSTEM_LIBRARIES: [&str; 3] = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/mnt/system_ext/lib64"];
 
 /// The folders the program a script names `path` finds its libraries in.

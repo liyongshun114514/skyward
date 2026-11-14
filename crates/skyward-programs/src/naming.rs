@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(
             steps(&named_by_none).unwrap(),
             [
-                once("/vendor/bin/init.qti.qcv.sh", &[], &["/system/lib64", "/vendor/lib64"], None, &[]),
+                once("/vendor/bin/init.qti.qcv.sh", &[], &["/system/lib64", "/vendor/lib64", "/vendor/lib64/hw"], None, &[]),
                 set("ro.boot.product.vendor.sku", "${ro.vendor.qti.soc_name}"),
             ],
             "the section's commands up to the one that names the build, and none after it"
@@ -190,7 +190,7 @@ mod tests {
         let odm = "on charger\n    setprop ro.boot.product.hardware.sku charging\n";
         let dir = tempfile::tempdir().unwrap();
         let phone = phone(dir.path(), vendor, odm, &[("ro.boot.hardware", "qcom"), ("ro.boot.hwc", "CN")]);
-        let odm_libraries = ["/system/lib64", "/vendor/lib64", "/odm/lib64", "/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap"];
+        let odm_libraries = ["/system/lib64", "/vendor/lib64", "/odm/lib64", "/vendor/lib64/hw", "/odm/lib64/hw", "/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap"];
         assert_eq!(
             steps(&phone).unwrap(),
             [

@@ -106,6 +106,15 @@ pub fn start(steps: &[Step], libraries: Option<&Path>) -> Result<()> {
                 crate::bootlog::line(format!("starting key program {}", program.service.path));
                 crate::services::start(std::slice::from_ref(program.as_ref()), libraries)?;
                 crate::bootlog::line(format!("key program ready: {}", program.service.path));
+                if program.service.ready_service.as_deref() == Some(skyward_crypto::weaver::SERVICE) {
+                    // getConfig checks the actual HAL reply without reading a
+                    // credential slot, consuming a try, or handling a secret.
+                    let binder = skyward_binder::driver::Binder::open()?;
+                    let config = skyward_crypto::weaver::Weaver::open(&binder)?.config()
+                        .context("the weaver registered but did not answer getConfig")?;
+                    crate::bootlog::line(format!("weaver configuration ready: {} slots, {} key bytes, {} value bytes",
+                        config.slots, config.key_bytes, config.value_bytes));
+                }
             }
             Step::ServeElements => {
                 let readers = skyward_omapi::start()?;

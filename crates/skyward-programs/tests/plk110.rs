@@ -84,6 +84,15 @@ fn plk110_discovers_keys_and_both_supplicant_services_from_stock_partitions() {
         "the recovery manifest preserves every stock AIDL declaration"
     );
     let key_programs = secure::programs(&steps);
+    // DT_NEEDED libEseUtils.so exists only in /vendor/lib64/hw on PLK110.
+    // Its ordinary vendor/odm directories cannot satisfy that dependency.
+    let element = key_programs.iter().find(|p| p.service.path.ends_with("secure_element-service.qti")).unwrap();
+    assert_eq!(element.service.libraries.first().map(String::as_str), Some("/system/lib64"),
+        "keep recovery Binder/runtime libraries first");
+    for path in ["/vendor/lib64/hw", "/odm/lib64/hw"] {
+        assert!(element.service.libraries.iter().any(|p| p == path),
+            "the eSE must be able to load its dependency from {path}");
+    }
     let weaver = key_programs
         .iter()
         .find(|p| p.service.path.ends_with("weaver-service.nxp"))

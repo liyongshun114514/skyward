@@ -52,8 +52,8 @@ fn strings(words: &[&str]) -> Vec<String> {
 
 /// The folders a program finds its libraries in, by the partition it is
 /// on.
-const ON_VENDOR: [&str; 2] = ["/system/lib64", "/vendor/lib64"];
-const ON_ODM: [&str; 5] = ["/system/lib64", "/vendor/lib64", "/odm/lib64", "/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap"];
+const ON_VENDOR: [&str; 3] = ["/system/lib64", "/vendor/lib64", "/vendor/lib64/hw"];
+const ON_ODM: [&str; 7] = ["/system/lib64", "/vendor/lib64", "/odm/lib64", "/vendor/lib64/hw", "/odm/lib64/hw", "/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap"];
 const ON_SYSTEM: [&str; 3] = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/mnt/system_ext/lib64"];
 
 /// A program kept running as `user` in `groups`, with nothing else said
