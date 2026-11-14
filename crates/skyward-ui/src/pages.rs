@@ -137,6 +137,7 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
         Confirm::SwitchSystem => (["滑动以切换并重启", "滑動以切換並重新啟動", "Slide to switch and reboot"], false),
         Confirm::RemoveSystem => (["滑动以删除", "滑動以刪除", "Slide to remove"], true),
         Confirm::InstallSystem => (INSTALL, false),
+        Confirm::ForgetNetwork => (["滑动以忘记网络", "滑動以忘記網路", "Slide to forget the network"], true),
     };
     (s.lang.pick(label), danger)
 }
@@ -2879,8 +2880,14 @@ pub fn wlan(cx: &Ctx) -> Frame {
     let mut out = Vec::new();
     let top = t.m.content_top;
     let on = !matches!(w.power, Power::Off | Power::Failed(_));
-    let switch = widgets::list(&mut c, t, f, top, &[Row::new(l.pick(WLAN)).trail(Trail::Switch(on))]);
-    out.extend(hits(&switch.rows, &[Action::Toggle(Switch::Wlan)]));
+    let switch = widgets::list(
+        &mut c,
+        t,
+        f,
+        top,
+        &[Row::new(l.pick(WLAN)).trail(Trail::Switch(on)), Row::new(l.pick(REMEMBER_WLAN)).trail(Trail::Switch(s.remember_wlan))],
+    );
+    out.extend(hits(&switch.rows, &[Action::Toggle(Switch::Wlan), Action::Toggle(Switch::RememberWlan)]));
     let mut y = switch.bottom;
     match &w.power {
         Power::Off => {
@@ -2955,10 +2962,47 @@ pub fn wlan(cx: &Ctx) -> Frame {
                 out.push(Hit { rect: widgets::round_button(t, *rect), action: Action::NetworkDetails(*k) });
             }
             y = list.bottom;
+            // What the phone keeps is not what the scan found: a network
+            // kept is one it has joined, so it is listed apart, with no
+            // signal to show and a button that forgets it. The row is not
+            // drawn as joined or in range, and nothing is removed here
+            // until the runtime says the password is gone.
+            if !s.saved.is_empty() {
+                let y2 = widgets::section(&mut c, t, f, y, l.pick(SAVED_NETWORKS));
+                let kept: Vec<Row> = s
+                    .saved
+                    .iter()
+                    .map(|n| Row::new(&n.name).subtitle(fmt::security(l, n.security)).trail(Trail::Network { locked: locked(n.security) }))
+                    .collect();
+                let kept = widgets::list(&mut c, t, f, y2, &kept);
+                for (rect, i) in kept.rows.iter().zip(0..s.saved.len()) {
+                    out.push(Hit { rect: widgets::round_button(t, *rect), action: Action::ForgetSaved(i) });
+                }
+                y = kept.bottom;
+            }
+            // The swipe that asks whether it is meant stands under the
+            // list, never over it, so nothing but the swipe itself can
+            // forget.
+            if let Some(name) = &s.forget_pending {
+                let what = tr!(
+                    l,
+                    "忘记「{name}」？手机将不再自动连接它，密码也不再保留。",
+                    "忘記「{name}」？手機將不再自動連線它，密碼也不再保留。",
+                    "Forget “{name}”? The phone will no longer join it by itself, and its password won't be kept."
+                );
+                let note = widgets::footnote(&mut c, t, f, y, &what);
+                let (label, danger) = confirm_label(Confirm::ForgetNetwork, s);
+                let track = widgets::confirm(&mut c, t, f, note + t.m.dp(24.0), label, danger, s.confirm);
+                out.push(Hit { rect: track, action: Action::Confirm(Confirm::ForgetNetwork) });
+                y = track.y + track.h;
+            }
         }
     }
     Frame::new(t, fit(c, t, y), out, l.pick(WLAN), top)
 }
+
+const SAVED_NETWORKS: Text = ["已保存的网络", "已儲存的網路", "Saved networks"];
+const REMEMBER_WLAN: Text = ["记住网络", "記住網路", "Remember networks"];
 
 const ADD_NETWORK: Text = ["添加网络", "新增網路", "Add network"];
 const SHOW_PASSWORD: Text = ["显示密码", "顯示密碼", "Show password"];
@@ -3076,8 +3120,25 @@ pub fn wlan_network(cx: &Ctx) -> Frame {
     }
     let y = widgets::detail_grid(&mut c, t, f, y, &items);
     let forget = widgets::list(&mut c, t, f, y + t.m.card_gap, &[Row::new(l.pick(["删除网络", "刪除網路", "Forget network"])).tint(t.pal.danger).trail(Trail::None)]);
-    out.extend(hits(&forget.rows, &[Action::LeaveNetwork]));
-    Frame::new(t, fit(c, t, forget.bottom), out, title, top)
+    out.extend(hits(&forget.rows, &[Action::ForgetNetwork]));
+    let mut bottom = forget.bottom;
+    // Forgetting takes the password kept for it away, so it is asked for
+    // with a swipe rather than a tap; the page under says what is left.
+    if s.asking_delete {
+        let name = &network.name;
+        let what = tr!(
+            l,
+            "忘记「{name}」？手机将不再自动连接它，密码也不再保留。",
+            "忘記「{name}」？手機將不再自動連線它，密碼也不再保留。",
+            "Forget “{name}”? The phone will no longer join it by itself, and its password won't be kept."
+        );
+        let note = widgets::footnote(&mut c, t, f, forget.bottom, &what);
+        let (label, danger) = confirm_label(Confirm::ForgetNetwork, s);
+        let track = widgets::confirm(&mut c, t, f, note + t.m.dp(24.0), label, danger, s.confirm);
+        out.push(Hit { rect: track, action: Action::Confirm(Confirm::ForgetNetwork) });
+        bottom = track.y + track.h;
+    }
+    Frame::new(t, fit(c, t, bottom), out, title, top)
 }
 
 /// The file manager, every entry of the folder shown, folders first.

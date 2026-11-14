@@ -10,6 +10,11 @@ use skyward_ui::settings::{Kept, Settings};
 use std::fs::{self, File};
 use std::io::{ErrorKind, Write};
 use std::path::Path;
+use std::sync::Mutex;
+
+/// Settings and saved WLAN records share the same mount; keep their
+/// writable windows from ending under one another.
+static METADATA_ACCESS: Mutex<()> = Mutex::new(());
 
 const METADATA: &str = "/metadata";
 const FOLDER: &str = "/metadata/skyward";
@@ -46,12 +51,19 @@ fn read_file() -> Result<Kept> {
 /// Write `settings` whole: into a file beside theirs, flushed, then moved
 /// over it, with /metadata writable only meanwhile.
 pub fn write(settings: &Settings) -> Result<()> {
+    with_writable_metadata(|| write_file(settings))
+}
+
+/// Serialize records with settings and restore the read-only mount even
+/// when a write fails. Callers must not nest metadata operations.
+pub(crate) fn with_writable_metadata<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
     with_metadata(|| {
         skyward_vab::metadata_writable(true)?;
-        let wrote = write_file(settings);
+        let wrote = work();
         let back = skyward_vab::metadata_writable(false);
-        wrote?;
-        back
+        let value = wrote?;
+        back?;
+        Ok(value)
     })
 }
 
@@ -66,7 +78,8 @@ fn write_file(settings: &Settings) -> Result<()> {
 
 /// Do `work` on /metadata, mounted read-only for the moment where it is not
 /// mounted, as in fastboot, and taken away again after.
-fn with_metadata<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
+pub(crate) fn with_metadata<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _access = METADATA_ACCESS.lock().unwrap_or_else(|held| held.into_inner());
     let at = Path::new(METADATA);
     if mount::is_mount_point(at)? {
         return work();

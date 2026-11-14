@@ -282,6 +282,23 @@ pub struct Adding {
     pub choosing: bool,
 }
 
+/// A network whose password the phone keeps, as the WLAN page lists it to
+/// offer forgetting it.
+///
+/// This is not what a scan found ([`Network`]): a network kept is one the
+/// phone has joined, so it has no signal strength and no band. It holds the
+/// name and how the network is protected, and never the password: the pages
+/// draw no password, and what the runtime reports is only what they draw.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedNetwork {
+    /// The name as the access point sends it, which need not be UTF-8.
+    pub ssid: Vec<u8>,
+    /// That name with what is not UTF-8 put right, which two networks can
+    /// share: it is for showing, never for telling them apart.
+    pub name: String,
+    pub security: Security,
+}
+
 /// A text field of the page that adds a network.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
@@ -559,6 +576,9 @@ pub enum Switch {
     Wlan,
     /// Show the password typed rather than a dot for each character.
     ShowPassword,
+    /// Keep the network joined, with its password, so that the recovery
+    /// joins it by itself at the next start.
+    RememberWlan,
 }
 
 /// What a backup can take, in the order the backup page lists it.
@@ -877,6 +897,9 @@ pub enum Confirm {
     RemoveSystem,
     /// Install the system the installer holds with the room chosen.
     InstallSystem,
+    /// Forget the network the WLAN page offers, with the password kept for
+    /// it. A swipe then does it.
+    ForgetNetwork,
 }
 
 /// What the wipe page erases: everything a factory reset erases, or any of
@@ -1289,6 +1312,11 @@ pub enum Action {
     OpenJoined,
     /// Leave the network joined, and forget it.
     LeaveNetwork,
+    /// Forget the network the details page is of, with the password kept
+    /// for it: a swipe then does it.
+    ForgetNetwork,
+    /// Forget the saved network at this place in the list of those kept.
+    ForgetSaved(usize),
     /// Look for the networks in range again.
     Rescan,
     /// Open the page that adds a network by hand.
@@ -1731,6 +1759,15 @@ pub struct State {
     pub joining: Option<Network>,
     /// The network the details page is of, as it was found.
     pub details: Option<Network>,
+    /// Whether a network joined has its password kept, so that the recovery
+    /// joins it by itself at the next start.
+    pub remember_wlan: bool,
+    /// The networks whose passwords the phone keeps, as the runtime last
+    /// told them: what the WLAN page offers to forget.
+    pub saved: Vec<SavedNetwork>,
+    /// The saved network whose forgetting waits for a swipe, by the name
+    /// the page shows.
+    pub forget_pending: Option<String>,
     /// The network the page that adds one is adding.
     pub adding: Option<Adding>,
     /// The password typed on the password page or the page that adds a
@@ -1825,6 +1862,9 @@ impl Default for State {
             wlan: None,
             joining: None,
             details: None,
+            remember_wlan: true,
+            saved: Vec::new(),
+            forget_pending: None,
             adding: None,
             password: String::new(),
             show_password: false,
@@ -2106,6 +2146,11 @@ pub enum Effect {
     ScanWlan,
     JoinWlan { ssid: Vec<u8>, name: String, security: Security, password: Secret },
     LeaveWlan,
+    /// Forget the saved network named `name`, with the password kept for it,
+    /// telling how it went with [`App::wlan_forgotten`]. An empty name
+    /// forgets every network kept, which is what turning the switch that
+    /// remembers networks off asks for.
+    ForgetWlan(String),
     /// Ask the update server for the newest system, telling what it
     /// answered with [`App::update_checked`].
     CheckUpdate,
@@ -3595,6 +3640,32 @@ impl App {
         self.dirty = true;
     }
 
+    /// The networks whose passwords the phone keeps, as the runtime last
+    /// read them: what the WLAN page offers to forget.
+    pub fn set_saved(&mut self, saved: Vec<SavedNetwork>) {
+        if self.state.saved != saved {
+            self.state.saved = saved;
+            self.refresh();
+        }
+    }
+
+    /// Forgetting a network ended: the page says what came of it. What is
+    /// kept now is read from the runtime, not assumed here, so a failure
+    /// leaves the list as it was.
+    pub fn wlan_forgotten(&mut self, forgot: Result<String, String>, now: u64) {
+        let l = self.state.lang;
+        let said = match forgot {
+            Ok(name) if !name.is_empty() => tr!(l, "已忘记「{name}」", "已忘記「{name}」", "“{name}” is forgotten"),
+            Ok(_) => l.pick(["已清除保存的网络", "已清除儲存的網路", "The networks kept are cleared"]).to_string(),
+            Err(why) => format!("{}: {why}", l.pick(["未能忘记该网络", "未能忘記該網路", "The network was not forgotten"])),
+        };
+        self.state.forget_pending = None;
+        self.state.asking_delete = false;
+        self.state.confirm = 0.0;
+        self.refresh();
+        self.say(&said, now);
+    }
+
     /// How fast data went over the network joined in the last second, which
     /// only the status bar shows.
     pub fn set_traffic(&mut self, t: Traffic) {
@@ -4841,7 +4912,15 @@ impl App {
                 self.state.joining = None;
                 self.state.password.clear();
             }
-            Screen::WlanNetwork => self.state.details = None,
+            Screen::WlanNetwork => {
+                self.state.details = None;
+                self.state.asking_delete = false;
+            }
+            // A swipe that was asked for goes with the page it was asked on.
+            Screen::Wlan => {
+                self.state.forget_pending = None;
+                self.state.asking_delete = false;
+            }
             // A list open over the page closes first.
             Screen::WlanAdd => {
                 if let Some(a) = self.state.adding.as_mut().filter(|a| a.choosing) {
@@ -5160,6 +5239,10 @@ impl App {
                 let w = self.state.wlan.as_mut().expect("the WLAN switch shows on a phone whose WLAN is brought up");
                 let on = matches!(w.power, Power::Off | Power::Failed(_));
                 *w = Wlan { power: if on { Power::Starting } else { Power::Off }, ..Wlan::default() };
+                // A swipe asked for on the page goes with the list it was
+                // asked on.
+                self.state.forget_pending = None;
+                self.state.asking_delete = false;
                 self.refresh();
                 return vec![Effect::Wlan(on)];
             }
@@ -5172,13 +5255,27 @@ impl App {
                     Switch::Signature => &mut self.state.check_signature,
                     Switch::KeepRecovery => &mut self.state.keep_recovery,
                     Switch::ShowPassword => &mut self.state.show_password,
+                    Switch::RememberWlan => &mut self.state.remember_wlan,
                     Switch::Wlan => unreachable!("the WLAN switch is turned above"),
                 };
                 *on = !*on;
                 let now_on = *on;
+                // Turning remembering off takes what is kept away, and the
+                // page says so at once: a password left on the phone after
+                // the switch was turned off is the one thing the switch
+                // promises not to do. What is kept is read again from the
+                // runtime once it has forgotten it.
+                if switch == Switch::RememberWlan && !now_on {
+                    self.state.saved.clear();
+                    self.state.forget_pending = None;
+                    self.state.asking_delete = false;
+                }
                 self.refresh();
                 if switch == Switch::FileTransfer {
                     return vec![Effect::FileTransfer(now_on)];
+                }
+                if switch == Switch::RememberWlan && !now_on {
+                    return vec![Effect::ForgetWlan(String::new())];
                 }
             }
             Action::MountToggle(i) => {
@@ -5556,6 +5653,27 @@ impl App {
                 let mut fx = self.back(now);
                 fx.push(Effect::LeaveWlan);
                 return fx;
+            }
+            // Forgetting a network is asked for on its own page, and the
+            // swipe under it confirms it. Nothing goes until the runtime
+            // says the password is gone.
+            Action::ForgetNetwork => {
+                if self.state.details.is_some() {
+                    self.state.forget_pending = None;
+                    self.state.asking_delete = true;
+                    self.state.confirm = 0.0;
+                    self.refresh();
+                }
+            }
+            // A row of what is kept: the name is all the page has, and the
+            // swipe under the list asks whether it is meant.
+            Action::ForgetSaved(i) => {
+                if let Some(saved) = self.state.saved.get(i) {
+                    self.state.forget_pending = Some(saved.name.clone());
+                    self.state.asking_delete = true;
+                    self.state.confirm = 0.0;
+                    self.refresh();
+                }
             }
             Action::Rescan => return vec![Effect::ScanWlan],
             Action::AddNetwork => {
@@ -6568,6 +6686,27 @@ impl App {
                     fx.push(Effect::InstallSystem { size: choice.sizes[choice.size] });
                     self.state.install = Install::Systeming { name: choice.name.clone(), stage: None };
                     self.refresh();
+                }
+            }
+            // Forgetting is the details page's own row, or a row of what is
+            // kept. The details page goes back first, so the page under it
+            // is the one that shows what is left. A network nothing is kept
+            // of is only left: forgetting it would be told there is nothing
+            // to forget.
+            Confirm::ForgetNetwork => {
+                let from_details = self.state.details.take();
+                let name = from_details.as_ref().map(|n| n.name.clone()).or_else(|| self.state.forget_pending.take());
+                let kept = name.as_ref().is_some_and(|name| self.state.saved.iter().any(|s| &s.name == name));
+                self.state.forget_pending = None;
+                self.state.asking_delete = false;
+                self.state.confirm = 0.0;
+                if from_details.is_some() {
+                    fx.extend(self.back(now));
+                }
+                match name {
+                    Some(_) if from_details.is_some() && !kept => fx.push(Effect::LeaveWlan),
+                    Some(name) => fx.push(Effect::ForgetWlan(name)),
+                    None => self.say(l.pick(["没有要忘记的网络", "沒有要忘記的網路", "There is no network to forget"]), now),
                 }
             }
         }
@@ -10585,6 +10724,12 @@ mod tests {
         assert_eq!(app.state.install, Install::Ending);
     }
 
+    /// A network whose password the phone keeps, as the runtime reports it:
+    /// its name and protection, and never its password.
+    fn saved_network(name: &str, security: Security) -> SavedNetwork {
+        SavedNetwork { ssid: name.as_bytes().to_vec(), name: name.into(), security }
+    }
+
     fn network(name: &str, signal: i32, security: Security) -> Network {
         let bands = skyward_net::wlan::Bands::of(5805);
         Network { ssid: name.as_bytes().to_vec(), name: name.into(), signal, frequency: 5805, bands, security }
@@ -10658,7 +10803,9 @@ mod tests {
         assert_eq!(fmt::wlan_value(Lang::Hans, app.state.wlan.as_ref().unwrap()), "Skyward");
         tap(&mut app, &f, &i, Action::OpenJoined);
         assert_eq!(app.screen(), Screen::WlanNetwork);
-        assert_eq!(tap(&mut app, &f, &i, Action::LeaveNetwork), vec![Effect::LeaveWlan]);
+        assert!(!app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Confirm(Confirm::ForgetNetwork)), "nothing is asked before the row is touched");
+        tap(&mut app, &f, &i, Action::ForgetNetwork);
+        assert_eq!(swipe(&mut app, &f, &i, Confirm::ForgetNetwork), vec![Effect::LeaveWlan], "nothing is kept of it, so forgetting only leaves it");
         assert_eq!(app.screen(), Screen::Wlan);
         assert_eq!(tap(&mut app, &f, &i, Action::Toggle(Switch::Wlan)), vec![Effect::Wlan(false)]);
         assert_eq!(app.state.wlan, Some(Wlan::default()));
@@ -10843,7 +10990,7 @@ mod tests {
         tap(&mut app, &f, &i, Action::NetworkDetails(1));
         assert_eq!(app.screen(), Screen::WlanNetwork);
         assert_eq!(app.state.details.as_ref().map(|n| n.name.as_str()), Some("Skyward-Open"));
-        assert!(!app.frame(&f, &i).hits.iter().any(|h| h.action == Action::LeaveNetwork), "a network not chosen has nothing to forget");
+        assert!(!app.frame(&f, &i).hits.iter().any(|h| h.action == Action::ForgetNetwork), "a network not chosen has nothing to forget");
         app.key(Key::Back, 0);
         // The round button sits on its row, and is what a touch on it finds.
         let fr = app.frame(&f, &i);
@@ -10852,6 +10999,88 @@ mod tests {
         assert!(row.contains(round.x + round.w / 2.0, round.y + round.h / 2.0));
         assert_eq!(fr.hit(round.x + round.w / 2.0, round.y + round.h / 2.0).map(|h| h.action), Some(Action::NetworkDetails(1)));
         assert_eq!(fr.hit(row.x + row.w / 3.0, row.y + row.h / 2.0).map(|h| h.action), Some(Action::JoinNetwork(1)));
+    }
+
+    #[test]
+    fn remembering_networks_is_a_switch_that_forgets_what_was_kept_when_turned_off() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.wlan = Some(Wlan::default());
+        app.state.saved = vec![saved_network("Skyward", Security::Psk), saved_network("Cafe", Security::Open)];
+        app.act(Action::Open(Screen::Wlan), 0);
+        assert!(app.state.remember_wlan, "networks are remembered by default");
+        assert!(app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Toggle(Switch::RememberWlan)), "the switch is on the page");
+        assert_eq!(
+            tap(&mut app, &f, &i, Action::Toggle(Switch::RememberWlan)),
+            vec![Effect::ForgetWlan(String::new())],
+            "turning it off asks the runtime to take every kept password away"
+        );
+        assert!(!app.state.remember_wlan, "the switch says what it is");
+        assert!(app.state.saved.is_empty(), "the page no longer offers to forget what is being taken away");
+        assert!(tap(&mut app, &f, &i, Action::Toggle(Switch::RememberWlan)).is_empty(), "turning it on writes nothing");
+        assert!(app.state.remember_wlan);
+    }
+
+    #[test]
+    fn a_saved_network_is_forgotten_only_by_the_swipe_that_asks_and_the_runtime_is_told() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.wlan = Some(Wlan { power: Power::On, networks: Vec::new(), joined: None });
+        app.state.saved = vec![saved_network("Skyward", Security::Psk), saved_network("Cafe", Security::Open)];
+        app.act(Action::Open(Screen::Wlan), 0);
+        let margin = app.theme().m.margin;
+        let fr = app.frame(&f, &i);
+        let round = fr.hits.iter().find(|h| h.action == Action::ForgetSaved(0)).expect("the network kept ends with the button that forgets it").rect;
+        assert!(
+            round.x + round.w <= fr.canvas.w as f32 - margin + 1.0 && round.y + round.h <= fr.canvas.h as f32,
+            "the button stays inside the page and its right margin"
+        );
+        assert!(!fr.hits.iter().any(|h| h.action == Action::Confirm(Confirm::ForgetNetwork)), "nothing is asked before the button is touched");
+        assert!(tap(&mut app, &f, &i, Action::ForgetSaved(0)).is_empty(), "a touch only asks");
+        assert_eq!(app.state.forget_pending.as_deref(), Some("Skyward"));
+        assert_eq!(app.state.saved.len(), 2, "nothing is dropped from the list before the runtime says it is gone");
+        assert!(app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Confirm(Confirm::ForgetNetwork)), "the swipe asks whether it is meant");
+        assert_eq!(swipe(&mut app, &f, &i, Confirm::ForgetNetwork), vec![Effect::ForgetWlan("Skyward".into())]);
+        assert!(app.state.forget_pending.is_none());
+        assert_eq!(app.state.saved.len(), 2, "the list is what the runtime reports, not what the page hopes");
+        app.set_saved(vec![saved_network("Cafe", Security::Open)]);
+        assert_eq!(app.state.saved.len(), 1);
+        assert!(!app.frame(&f, &i).hits.iter().any(|h| h.action == Action::ForgetSaved(1)), "the list has one row now");
+    }
+
+    #[test]
+    fn the_network_details_forget_by_a_swipe_and_a_kept_password_is_taken_away() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.wlan = Some(connected("Skyward"));
+        app.state.saved = vec![saved_network("Skyward", Security::Psk)];
+        app.act(Action::Open(Screen::Wlan), 0);
+        tap(&mut app, &f, &i, Action::OpenJoined);
+        assert_eq!(app.screen(), Screen::WlanNetwork);
+        assert!(app.frame(&f, &i).hits.iter().any(|h| h.action == Action::ForgetNetwork), "the page offers to forget the network it shows");
+        assert!(tap(&mut app, &f, &i, Action::ForgetNetwork).is_empty());
+        assert!(app.state.asking_delete, "the swipe is asked for rather than a tap forgetting at once");
+        assert_eq!(swipe(&mut app, &f, &i, Confirm::ForgetNetwork), vec![Effect::ForgetWlan("Skyward".into())]);
+        assert_eq!(app.screen(), Screen::Wlan, "the page under shows what is left");
+        assert_eq!(app.state.details, None);
+        assert_eq!(app.state.saved.len(), 1, "only the runtime's report takes it from the list");
+        app.wlan_forgotten(Ok("Skyward".into()), 0);
+        assert_eq!(toast(&app), Some("已忘记「Skyward」"));
+        app.set_saved(Vec::new());
+        assert!(app.state.saved.is_empty());
+    }
+
+    #[test]
+    fn what_is_kept_of_a_network_is_its_name_and_protection_and_never_its_password() {
+        let saved = saved_network("Skyward", Security::Psk);
+        assert_eq!(
+            format!("{saved:?}"),
+            r#"SavedNetwork { ssid: [83, 107, 121, 119, 97, 114, 100], name: "Skyward", security: Psk }"#,
+            "the model holds no password, so neither the state nor a page can draw one"
+        );
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.set_saved(vec![saved]);
+        assert!(!format!("{:?}", app.state.saved).to_lowercase().contains("password"));
     }
 
     fn newest() -> Release {

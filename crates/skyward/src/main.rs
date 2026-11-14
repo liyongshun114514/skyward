@@ -447,7 +447,7 @@ fn main() -> Result<()> {
                 Ok(steps) => programs.extend(keys::programs(&steps)),
                 Err(e) => eprintln!("the programs of the phone's keys are not known: {e:#}"),
             }
-            ui::run(&cfg, &programs, &font, &mono, bcb::Request::default(), start, dump.as_deref())
+            ui::run(&cfg, &programs, &font, &mono, bcb::Request::default(), start, dump.as_deref(), None)
         }
     }
 }
@@ -853,13 +853,20 @@ fn recovery() -> Result<()> {
             // partitions the system asks for, as in Android's own recovery:
             // erasing them, which may take super with them, and undoing
             // shared blocks, which writes to the slot's own.
+            let root = Path::new("/");
+            let first = match ui::splash(&root.join(ramdisk::FONT), &root.join(ramdisk::MONO)) {
+                Ok(surface) => Some(surface),
+                Err(e) => {
+                    crate::bootlog::line(format!("the start screen was not shown: {e:#}"));
+                    None
+                }
+            };
             let mut programs = cfg.services.clone();
             if !matches!(request.work, bcb::Work::Fastboot | bcb::Work::WipeAb { .. } | bcb::Work::UnshareBlocks) {
                 programs.extend(prepare(&cfg, booted_slot()?)?);
             }
-            let root = Path::new("/");
             {
-                let ran = ui::run(&cfg, &programs, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO), request, Screen::Home, None);
+                let ran = ui::run(&cfg, &programs, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO), request, Screen::Home, None, first);
                 crate::bootlog::line(match &ran {
                     Ok(()) => "the pages closed".to_string(),
                     Err(e) => format!("the pages failed: {e:#}"),

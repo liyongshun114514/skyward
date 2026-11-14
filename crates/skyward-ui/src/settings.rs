@@ -49,6 +49,12 @@ pub struct Settings {
     pub vibration: f32,
     /// A computer connected over USB is offered internal storage.
     pub file_transfer: bool,
+    /// A network joined keeps its password, so that the recovery joins it by
+    /// itself at the next start. A file that names none leaves it on:
+    /// joining a network and typing its password again at every start is
+    /// what this spares someone, and a network that is never joined keeps
+    /// nothing either way.
+    pub remember_wlan: bool,
     pub install: Install,
     pub backup: Backup,
     pub logs: Logs,
@@ -126,6 +132,7 @@ impl Settings {
             vibrate: state.vibrate,
             vibration: state.vibration,
             file_transfer: state.file_transfer,
+            remember_wlan: state.remember_wlan,
             install: Install { check_signature: state.check_signature, keep_recovery: state.keep_recovery },
             backup: Backup {
                 parts: names(&state.backup, &PARTS),
@@ -184,6 +191,7 @@ impl Settings {
             state.vibration = self.vibration;
         }
         state.file_transfer = self.file_transfer;
+        state.remember_wlan = self.remember_wlan;
         state.check_signature = self.install.check_signature;
         state.keep_recovery = self.install.keep_recovery;
         state.backup = picked(&self.backup.parts, &PARTS);
@@ -308,6 +316,7 @@ mod tests {
             vibrate: false,
             vibration: 0.4,
             file_transfer: false,
+            remember_wlan: false,
             check_signature: true,
             keep_recovery: false,
             backup: [false, true, true, false],
@@ -349,6 +358,20 @@ mod tests {
         assert_eq!(Settings::of(&state), Settings { dark: true, backup: Backup { compress: true, ..Backup::default() }, ..Settings::default() });
         assert!(!state.language_chosen);
         assert!(Settings::read("dark = true").is_err(), "not JSON");
+    }
+
+    #[test]
+    fn a_file_that_names_no_networks_keeps_them_and_one_that_turns_remembering_off_does_not() {
+        let older = Settings::read(r#"{ "dark": true, "file_transfer": false }"#).unwrap();
+        assert!(older.remember_wlan, "a file written before the switch keeps networks, as the recovery starts");
+        let mut state = State::default();
+        older.apply(&mut state);
+        assert!(state.remember_wlan);
+        let off = Settings { remember_wlan: false, dark: true, ..Settings::default() };
+        off.apply(&mut state);
+        assert!(!state.remember_wlan);
+        assert!(!Settings::read(&off.text()).unwrap().remember_wlan, "off is written as off");
+        assert!(Settings::read(&Settings::default().text()).unwrap().remember_wlan, "and on as on");
     }
 
     #[test]

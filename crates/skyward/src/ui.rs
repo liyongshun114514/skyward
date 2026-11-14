@@ -1049,6 +1049,37 @@ fn wait(fds: &[i32], timeout_ms: i32) -> Result<()> {
     Ok(())
 }
 
+/// Show the reference repository's first screen while partitions and HALs
+/// are prepared. Keep the KMS surface alive for the pages to take over.
+pub fn splash(font: &Path, mono: &Path) -> Result<KmsSurface> {
+    let fonts = Fonts::load(font, 0, mono)?;
+    let mut surface = KmsSurface::open("/dev/dri/card0")?;
+    let kept = settings::read().ok();
+    let settings = kept.as_ref().and_then(|k| k.settings());
+    let brightness = settings.map_or(0.7, |s| s.brightness).clamp(0.0, 1.0);
+    let dark = settings.is_some_and(|s| s.dark);
+    if let Ok(mut backlight) = Backlight::open() {
+        if let Err(e) = backlight.show(Some(brightness)) {
+            crate::bootlog::line(format!("the start screen backlight was not set: {e:#}"));
+        }
+    }
+    let (w, h) = surface.size();
+    let canvas = skyward_ui::splash::frame(&fonts, w, h, dark);
+    surface.present(&canvas)?;
+    surface.settle()?;
+    crate::bootlog::line(format!("the panel shows the Skyward start screen, {w}x{h}"));
+    Ok(surface)
+}
+
+/// An optional motor must not take down the recovery on a driver error.
+fn play_haptics(haptics: &mut Option<Haptics>, ticks: bool, position: f32) {
+    let played = haptics.as_mut().map(|h| if ticks { h.ticks() } else { h.click(position) });
+    if let Some(Err(e)) = played {
+        crate::bootlog::line(format!("haptics disabled after playback failed: {e:#}"));
+        *haptics = None;
+    }
+}
+
 /// Run the pages. What `request`, read from misc, asks for decides the
 /// first of them; asking for nothing, they start at `start`. `programs`
 /// are the phone's own that the recovery keeps running: the
@@ -1061,13 +1092,17 @@ pub fn run(
     request: bcb::Request,
     start: Screen,
     dump: Option<&Path>,
+    taken: Option<KmsSurface>,
 ) -> Result<()> {
     if cfg.display.density == 0 {
         return Err(anyhow!("{}: [display] density is required to lay out the UI", cfg.device.codename));
     }
     let mut info = skyward_info::collect(cfg)?;
     let fonts = Fonts::load(font, 0, mono)?;
-    let mut surface = KmsSurface::open("/dev/dri/card0")?;
+    let mut surface = match taken {
+        Some(surface) => surface,
+        None => KmsSurface::open("/dev/dri/card0")?,
+    };
     let (w, h) = surface.size();
     // The panel is left as the boot loader and the kernel left it: a
     // touchscreen whose frames the phone's own service turns into touches,
@@ -1080,7 +1115,13 @@ pub fn run(
     let mut touch_reported = false;
     // adbd and fastbootd ask over it to go over to fastboot and back.
     let control = Control::open()?;
-    let mut haptics = cfg.haptics.as_ref().map(Haptics::open).transpose()?;
+    let mut haptics = match cfg.haptics.as_ref().map(Haptics::open).transpose() {
+        Ok(haptics) => haptics,
+        Err(e) => {
+            crate::bootlog::line(format!("haptics unavailable: {e:#}"));
+            None
+        }
+    };
     let mut backlight = match Backlight::open() {
         Ok(b) => b,
         Err(e) => {
@@ -1377,7 +1418,13 @@ pub fn run(
                 let _ = skyward_sys::kmsg(&format!("the vendor interface's libraries are not open: {e:#}"));
                 None
             });
-            Some(wlan::Worker::start(w.clone(), modules, libraries, servers.clone())?)
+            let worker = wlan::Worker::start(w.clone(), modules, libraries, servers.clone())?;
+            worker.persist(!fastboot);
+            worker.remember(app.state.remember_wlan);
+            if app.state.remember_wlan && !fastboot {
+                worker.send(wlan::Command::On);
+            }
+            Some(worker)
         }
         None => None,
     };
@@ -1415,16 +1462,12 @@ pub fn run(
         for fx in app.tick(now) {
             match fx {
                 Effect::Haptic => {
-                    if let Some(h) = &mut haptics {
-                        h.click(app.state.vibration)?;
-                    }
+                    play_haptics(&mut haptics, false, app.state.vibration);
                 }
                 // The power key held past its wait for volume down turns
                 // the screen off.
                 Effect::Ticks => {
-                    if let Some(h) = &mut haptics {
-                        h.ticks()?;
-                    }
+                    play_haptics(&mut haptics, true, app.state.vibration);
                 }
                 other => unreachable!("time passing asks for nothing but the motor, not {other:?}"),
             }
@@ -1940,6 +1983,16 @@ pub fn run(
                 app.set_traffic(t);
             }
         }
+        if let Some(worker) = &wlan {
+            if let Some(saved) = worker.saved() {
+                app.set_saved(saved.into_iter().map(|s| skyward_ui::app::SavedNetwork {
+                    ssid: s.ssid, name: s.name, security: s.security,
+                }).collect());
+            }
+            if let Some(forgotten) = worker.forgotten() {
+                app.wlan_forgotten(forgotten, now);
+            }
+        }
         // The WLAN page scans again now and then while it shows, as the
         // stock settings do.
         let wlan_on = app.state.wlan.as_ref().is_some_and(|w| w.power == WlanPower::On);
@@ -1958,6 +2011,9 @@ pub fn run(
             || backuper.is_some()
             || part_worker.is_some()
             || systems_worker.as_ref().is_some_and(systems::Worker::busy);
+        if let Some(worker) = &wlan {
+            worker.persist(!metadata_busy);
+        }
         if !metadata_busy {
             if let Some(due) = keeper.due(app.settings(), now) {
                 match settings::write(&due) {
@@ -2241,14 +2297,10 @@ pub fn run(
                         }
                     }
                     Effect::Haptic => {
-                        if let Some(h) = &mut haptics {
-                            h.click(app.state.vibration)?;
-                        }
+                        play_haptics(&mut haptics, false, app.state.vibration);
                     }
                     Effect::Ticks => {
-                        if let Some(h) = &mut haptics {
-                            h.ticks()?;
-                        }
+                        play_haptics(&mut haptics, true, app.state.vibration);
                     }
                     // The panel shows the last frame drawn, which is what is
                     // saved; one that cannot be is the page's to report.
@@ -2502,9 +2554,19 @@ pub fn run(
                         wlan_worker(&wlan)?.send(wlan::Command::Scan);
                     }
                     Effect::JoinWlan { ssid, name, security, password } => {
-                        wlan_worker(&wlan)?.send(wlan::Command::Join { ssid, name, security, password: password.0 })
+                        let worker = wlan_worker(&wlan)?;
+                        worker.remember(app.state.remember_wlan);
+                        worker.send(wlan::Command::Join { ssid, name, security, password: password.0 })
                     }
                     Effect::LeaveWlan => wlan_worker(&wlan)?.send(wlan::Command::Leave),
+                    Effect::ForgetWlan(name) => {
+                        let worker = wlan_worker(&wlan)?;
+                        if name.is_empty() {
+                            worker.remember(app.state.remember_wlan);
+                        } else {
+                            worker.forget(name);
+                        }
+                    }
                     // What the installed system is called is the page's to
                     // report when it cannot be read.
                     Effect::CheckUpdate => {

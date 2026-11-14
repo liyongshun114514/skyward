@@ -9,7 +9,7 @@ use skyward_net::dhcp::{self, Kept, Lease};
 use skyward_net::http::Servers;
 use skyward_net::iface;
 use skyward_net::reach::{self, Reach};
-use skyward_net::supplicant::{self, Bss, Control, Event as Told, Security};
+use skyward_net::supplicant::{self, Bss, Control, Event as Told, Saved, SavedNetwork, Security};
 use skyward_net::wlan::{self, Joined, Link, Next, Power, Stage, Traffic, Wlan};
 use std::fs;
 use std::net::Ipv4Addr;
@@ -19,9 +19,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command as Process, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+/// The networks whose passwords are kept, and the file that holds them.
+#[path = "remembered.rs"]
+mod remembered;
 
 /// The first folder the firmware loader looks in that a recovery can
 /// write.
@@ -65,8 +69,27 @@ pub enum Command {
     On,
     Off,
     Scan,
+    /// Join this network. Whether its password is kept for a later start is
+    /// the station's own setting ([`Command::Remember`]), so that a page
+    /// that knows nothing of remembering joins exactly as it did before.
     Join { ssid: Vec<u8>, name: String, security: Security, password: String },
     Leave,
+    /// Whether a network's password may be kept at all. Turning it off
+    /// takes what is kept away, as the switch that offers it promises.
+    Remember(bool),
+    /// Forget the network named `name`, with whatever was kept of it; an
+    /// empty name forgets every network kept.
+    Forget { name: String },
+    /// Whether `/metadata` can be written now.
+    ///
+    /// The settings are written through the same mount, and the page knows
+    /// when it is being written: a record is held in memory while this is
+    /// `false` and written once, on the change to `true`, so that a record
+    /// write never races a settings write or a flash that has the mount in
+    /// another state. A write that fails is not retried until the state
+    /// changes again: retrying a failing disk forever is how a WLAN thread
+    /// spends its life.
+    PersistAllowed(bool),
 }
 
 /// What comes to the thread: a command, how asking for an address went,
@@ -84,11 +107,23 @@ enum Asked {
     Kept(Kept),
 }
 
-/// What the thread tells the screen: how the WLAN stands, or how fast data
-/// went over it in the last second.
+/// What the thread tells the screen: how the WLAN stands, how fast data went
+/// over it in the last second, which networks the phone keeps, or how
+/// forgetting one went.
 enum Report {
     Wlan(Wlan),
     Traffic(Traffic),
+    Saved(Vec<SavedNetwork>),
+    Forgotten(Result<String, String>),
+}
+
+/// What was told about the kept networks since the screen last asked. It is
+/// stashed out of the one channel [`Worker::told`] drains, so that asking for
+/// it cannot take away what that call was going to return.
+#[derive(Default)]
+struct Stashed {
+    saved: Option<Vec<SavedNetwork>>,
+    forgotten: Option<Result<String, String>>,
 }
 
 pub struct Worker {
@@ -96,6 +131,9 @@ pub struct Worker {
     /// Written to wake the thread when something is in its inbox.
     poke: Arc<OwnedFd>,
     told: Receiver<Report>,
+    /// What the last drain of `told` took out of it besides the WLAN's own
+    /// state.
+    stashed: Mutex<Stashed>,
     /// Readable while the screen has something to be told.
     wake: OwnedFd,
     thread: Option<JoinHandle<()>>,
@@ -139,16 +177,74 @@ impl Worker {
                     let _ = told_tx.send(r);
                     signal(&rung);
                 };
-                let mut s = Station { cfg, modules, libraries, servers, state: Wlan::default(), running: None, back, tell: Box::new(tell) };
+                let mut s = Station {
+                    cfg,
+                    modules,
+                    libraries,
+                    servers,
+                    state: Wlan::default(),
+                    running: None,
+                    back,
+                    tell: Box::new(tell),
+                    saved: remembered::load(),
+                    keep: None,
+                    pending: None,
+                    persist_allowed: true,
+                    remembering: true,
+                };
+                s.tell_saved();
                 s.run(&inbox, &poked);
             })
             .context("start the WLAN thread")?;
-        Ok(Worker { inbox: inbox_tx, poke, told, wake, thread: Some(thread) })
+        Ok(Worker { inbox: inbox_tx, poke, told, stashed: Mutex::new(Stashed::default()), wake, thread: Some(thread) })
     }
 
     pub fn send(&self, c: Command) {
         let _ = self.inbox.send(Inbox::Command(c));
         signal(&self.poke);
+    }
+
+    /// Forget the network named `name`, with whatever the phone kept of it:
+    /// its password and how it is protected. An empty name forgets every
+    /// network kept, which is what the switch that turns remembering off
+    /// asks for.
+    pub fn forget(&self, name: String) {
+        self.send(Command::Forget { name });
+    }
+
+    /// Whether a network's password may be kept. `false` also takes away
+    /// what is kept, as the switch promises.
+    pub fn remember(&self, on: bool) {
+        self.send(Command::Remember(on));
+    }
+
+    /// Tell the thread whether `/metadata` can be written now. A record held
+    /// back for a busy mount is written on the change to `true`, once.
+    pub fn persist(&self, allowed: bool) {
+        self.send(Command::PersistAllowed(allowed));
+    }
+
+    /// The networks the phone keeps, if they changed since the last call.
+    ///
+    /// This reads what [`Worker::told`] stashed rather than draining the
+    /// channel itself: two drains of one channel would each take part of what
+    /// the other was going to return, and which part would depend on the
+    /// order the screen happened to ask in.
+    pub fn saved(&self) -> Option<Vec<SavedNetwork>> {
+        self.stashed().saved.take()
+    }
+
+    /// How forgetting a network went, if it ended since the last call.
+    pub fn forgotten(&self) -> Option<Result<String, String>> {
+        self.stashed().forgotten.take()
+    }
+
+    /// What was told besides the WLAN's state. A lock a panicking thread left
+    /// held says nothing was stashed, which is what the screen reads as no
+    /// news — the page is redrawn from the state it already has, so a lost
+    /// notice costs a line said out loud and never the WLAN.
+    fn stashed(&self) -> std::sync::MutexGuard<'_, Stashed> {
+        self.stashed.lock().unwrap_or_else(|held| held.into_inner())
     }
 
     pub fn fd(&self) -> RawFd {
@@ -159,11 +255,18 @@ impl Worker {
     /// second, each if told since the last call.
     pub fn told(&self) -> (Option<Wlan>, Option<Traffic>) {
         drain(&self.wake);
+        self.drain_told()
+    }
+
+    fn drain_told(&self) -> (Option<Wlan>, Option<Traffic>) {
         let (mut wlan, mut traffic) = (None, None);
+        let mut stashed = self.stashed();
         for report in self.told.try_iter() {
             match report {
                 Report::Wlan(w) => wlan = Some(w),
                 Report::Traffic(t) => traffic = Some(t),
+                Report::Saved(s) => stashed.saved = Some(s),
+                Report::Forgotten(f) => stashed.forgotten = Some(f),
             }
         }
         (wlan, traffic)
@@ -205,6 +308,9 @@ struct Running {
     probed: u64,
     /// When to ask for an address again after the network gave none.
     retry_at: Option<Instant>,
+    /// When to look again for a network the supplicant joined by itself,
+    /// which is how the first start after a network was kept comes up.
+    adopt_at: Instant,
     polled_at: Instant,
     /// What had gone over the interface when last counted, while it has an
     /// address.
@@ -248,10 +354,29 @@ struct Station {
     running: Option<Running>,
     back: Back,
     tell: Box<dyn Fn(Report) + Send>,
+    /// The networks whose passwords are kept, as the record last said. This
+    /// is the copy every change is made against, so that what is offered to
+    /// forget is what the next start would join, and never the supplicant's
+    /// own running set.
+    saved: Vec<Saved>,
+    /// The network being joined whose password is to be kept once it is
+    /// actually connected. A join that fails — a wrong password, a network
+    /// out of reach — never keeps anything, which is the whole point of
+    /// waiting for the address rather than writing it as it is typed.
+    keep: Option<Saved>,
+    /// A record that could not be written because `/metadata` was in use:
+    /// held here, written once when it is not, and let go when that write
+    /// fails so that a failing disk is not retried forever.
+    pending: Option<Vec<Saved>>,
+    /// Whether `/metadata` can be written now; the page says so each round.
+    persist_allowed: bool,
+    /// Whether a password joined is kept at all.
+    remembering: bool,
 }
 
 impl Station {
     fn run(&mut self, inbox: &Receiver<Inbox>, poked: &OwnedFd) {
+        self.tell_saved();
         let mut told = self.state.clone();
         loop {
             let mut fds = vec![libc::pollfd { fd: poked.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
@@ -285,8 +410,11 @@ impl Station {
     fn next(&self) -> Option<Instant> {
         let r = self.running.as_ref()?;
         let poll = matches!(self.state.joined, Some(Joined { stage: Stage::Connected(_), .. })).then(|| r.polled_at + POLL);
+        // A network the supplicant joined by itself is looked for until one
+        // is taken up, which a phone that keeps none never needs.
+        let adopt = (self.state.joined.is_none() && !self.saved.is_empty()).then_some(r.adopt_at);
         let count = r.lease.as_ref().map(|_| r.counted.map_or_else(Instant::now, |c| c.at + TRAFFIC));
-        [r.lease.as_ref().filter(|_| r.asking.is_none()).map(Held::due), r.retry_at, poll, count].into_iter().flatten().min()
+        [r.lease.as_ref().filter(|_| r.asking.is_none()).map(Held::due), r.retry_at, poll, adopt, count].into_iter().flatten().min()
     }
 
     fn command(&mut self, c: Command) {
@@ -304,15 +432,20 @@ impl Station {
             }
             Command::Join { ssid, name, security, password } => {
                 self.unaddress();
+                // Kept only once the network gives an address: a password
+                // that turns out wrong is one no later start should try.
+                self.keep = self.remembering.then(|| Saved { ssid: ssid.clone(), name: name.clone(), security, password: password.clone() });
                 let mut joined = Joined { ssid, name, security, stage: Stage::Joining };
                 if let Err(e) = self.join(&joined, &password) {
                     let _ = skyward_sys::kmsg(&format!("joining {} failed: {e:#}", joined.name));
                     joined.stage = Stage::Failed;
+                    self.keep = None;
                 }
                 self.state.joined = Some(joined);
             }
             Command::Leave => {
                 self.unaddress();
+                self.keep = None;
                 if let Some(r) = &self.running {
                     if let Err(e) = r.control.order("REMOVE_NETWORK all") {
                         self.lost(e);
@@ -320,6 +453,155 @@ impl Station {
                 }
                 self.state.joined = None;
             }
+            // Forgetting is not leaving: leaving drops the network this start
+            // joined, and forgetting takes away what the phone would join by
+            // itself at the next one.
+            Command::Forget { name } => {
+                let outcome = self.forget(&name);
+                if let Err(e) = &outcome {
+                    let _ = skyward_sys::kmsg(&format!("forgetting a network: {e:#}"));
+                }
+                (self.tell)(Report::Forgotten(outcome.map(|()| name.clone()).map_err(|e| format!("{e:#}"))));
+            }
+            Command::Remember(on) => {
+                self.remembering = on;
+                if !on {
+                    // A password kept on the phone after the switch was
+                    // turned off is the one thing the switch promises not to
+                    // do, so what is kept goes with it.
+                    let outcome = self.forget("");
+                    if let Err(e) = &outcome {
+                        let _ = skyward_sys::kmsg(&format!("forgetting the networks kept: {e:#}"));
+                    }
+                    (self.tell)(Report::Forgotten(outcome.map(|()| String::new()).map_err(|e| format!("{e:#}"))));
+                }
+            }
+            Command::PersistAllowed(allowed) => {
+                let was = self.persist_allowed;
+                self.persist_allowed = allowed;
+                // Written only on the change to allowed, and once: the page
+                // says this every round, and a failing disk must not turn
+                // that into a loop.
+                if allowed && !was {
+                    self.flush_pending();
+                }
+            }
+        }
+    }
+
+    /// Write the record held back while `/metadata` was in use, once. A write
+    /// that fails is let go with its reason in the kernel log: the page says
+    /// the mount is free again, and the next change to what is kept tries
+    /// again, rather than this spinning on a disk that will not take it.
+    fn flush_pending(&mut self) {
+        let Some(kept) = self.pending.take() else { return };
+        match remembered::save(&kept) {
+            Ok(()) => {
+                self.saved = kept;
+                self.tell_saved();
+            }
+            Err(e) => {
+                let _ = skyward_sys::kmsg(&format!("the networks kept were not written: {e:#}"));
+            }
+        }
+    }
+
+    /// What the page is told of the networks kept: their names and
+    /// protections, never a password.
+    fn tell_saved(&self) {
+        (self.tell)(Report::Saved(self.saved.iter().map(Saved::shown).collect()));
+    }
+
+    /// Take the network named `name` out of what the phone keeps; an empty
+    /// name takes every network kept, which is what turning the switch that
+    /// remembers passwords off asks for.
+    ///
+    /// The record this station holds is the authority, not the supplicant's
+    /// own list: a network this start joined by hand is only kept once it has
+    /// an address, and one kept from an earlier start is already joined by
+    /// the generated configuration before the page is ever opened. Matching
+    /// is by the name the page showed, which is the network's own name with
+    /// what is not UTF-8 put right.
+    ///
+    /// While `/metadata` is in use the change is held in memory and written
+    /// when the page says it is free ([`Command::PersistAllowed`]); it is
+    /// never queued behind a second attempt.
+    fn forget(&mut self, name: &str) -> Result<()> {
+        let kept: Vec<Saved> = if name.is_empty() { Vec::new() } else { self.saved.iter().filter(|k| k.name != name).cloned().collect() };
+        if kept.len() == self.saved.len() && !name.is_empty() {
+            // Nothing kept went by that name: say so rather than write the
+            // same record again and tell the page something was forgotten.
+            bail!("no network named {name} is kept");
+        }
+        if self.persist_allowed {
+            remembered::save(&kept)?;
+            self.pending = None;
+        } else {
+            self.pending = Some(kept.clone());
+        }
+        self.saved = kept;
+        self.tell_saved();
+        // A network whose password is gone must not stay up on it: the
+        // supplicant is told to drop what it holds, and the address it gave
+        // goes with it.
+        let dropped = name.is_empty() || self.state.joined.as_ref().is_some_and(|j| j.name == name);
+        if dropped {
+            self.keep = None;
+            self.unaddress();
+            if let Some(r) = &self.running {
+                r.control.order("REMOVE_NETWORK all")?;
+            }
+            self.state.joined = None;
+        }
+        Ok(())
+    }
+
+    /// Keep the password of a network that has just answered, so that the
+    /// next start joins it by itself.
+    ///
+    /// This is called only once the network gave an address: a password typed
+    /// wrong, or a network that would not have us, is never written down. A
+    /// record that cannot be written is said and nothing more — a phone that
+    /// cannot remember a network still has one joined now, and the page goes
+    /// on offering what is actually kept rather than what this tried to keep.
+    fn keep_saved(&mut self, network: Saved) {
+        let name = network.name.clone();
+        if !network.usable() {
+            let _ = skyward_sys::kmsg(&format!("{name} is not kept: its password cannot be used as written"));
+            return;
+        }
+        let mut next = self.saved.clone();
+        match next.iter().position(|k| k.same(&network)) {
+            // The same password for the same network: nothing to write, and
+            // nothing to tell the page.
+            Some(at) if next[at] == network => return,
+            Some(at) => next[at] = network,
+            // A record at its cap keeps what it has: the network is joined
+            // now and joined by hand again later, which is a smaller loss
+            // than a password dropped for one that may never be seen again.
+            None if next.len() < supplicant::SAVED_MOST => next.push(network),
+            None => {
+                let _ = skyward_sys::kmsg(&format!("{name} is not kept: {} networks are already kept", supplicant::SAVED_MOST));
+                return;
+            }
+        }
+        if self.persist_allowed {
+            match remembered::save(&next) {
+                Ok(()) => {
+                    self.pending = None;
+                    self.saved = next;
+                    self.tell_saved();
+                }
+                Err(e) => {
+                    let _ = skyward_sys::kmsg(&format!("{name} is not kept: {e:#}"));
+                }
+            }
+        } else {
+            // Held until the page says `/metadata` is free; it is written
+            // then, once, by [`Station::flush_pending`].
+            self.saved = next;
+            self.pending = Some(self.saved.clone());
+            self.tell_saved();
         }
     }
 
@@ -344,7 +626,7 @@ impl Station {
 
     fn start(&self) -> Result<Running> {
         bring_up(&self.cfg, &self.modules)?;
-        let mut child = start_supplicant(&self.cfg, self.libraries.as_deref())?;
+        let mut child = start_supplicant(&self.cfg, self.libraries.as_deref(), &self.saved)?;
         let socket = Path::new(HOME).join("sockets").join(&self.cfg.interface);
         let connected = (|| -> Result<(Control, Control)> {
             let control = Control::open(&socket)?;
@@ -372,6 +654,7 @@ impl Station {
             asked: 0,
             probed: 0,
             retry_at: None,
+            adopt_at: Instant::now(),
             polled_at: Instant::now(),
             counted: None,
         })
@@ -379,6 +662,7 @@ impl Station {
 
     fn off(&mut self) {
         self.unaddress();
+        self.keep = None;
         if let Some(mut r) = self.running.take() {
             end(&mut r.child, Some(&r.control));
         }
@@ -446,12 +730,24 @@ impl Station {
     }
 
     fn joining(&mut self, told: &Told) {
+        if self.state.joined.is_none() {
+            // The supplicant joins a network whose password is kept by
+            // itself at the first start, before anything here has said which
+            // network it is about: that is the one thing worth taking up.
+            if matches!(told, Told::Connected) {
+                self.adopt();
+            }
+            return;
+        }
         let Some(j) = &mut self.state.joined else { return };
         match j.on(told) {
             Next::Show => {}
             Next::Address => self.ask_address(),
             Next::Unaddress => self.unaddress(),
             Next::Forget => {
+                // The network turned the password down: there is nothing
+                // worth keeping.
+                self.keep = None;
                 if let Some(r) = &self.running {
                     if let Err(e) = r.control.order("REMOVE_NETWORK all") {
                         self.lost(e);
@@ -459,6 +755,52 @@ impl Station {
                 }
             }
         }
+    }
+
+    /// Take up the network the supplicant joined by itself.
+    ///
+    /// The configuration it is started with holds the networks whose
+    /// passwords are kept, so at the first start it joins one without being
+    /// told to — often before this thread has attached to its monitor, and
+    /// so without a word heard about it. What it joined is read back here and
+    /// taken up the way a network chosen on the page is, so that an address
+    /// is asked for and the page says what is connected.
+    ///
+    /// This asks nothing of the supplicant but its status, and runs at most
+    /// once every [`POLL`]: a kept network with a password the access point
+    /// no longer takes must not become a join attempt every time the loop
+    /// wakes.
+    fn adopt(&mut self) {
+        let Some(r) = &mut self.running else { return };
+        r.adopt_at = Instant::now() + POLL;
+        if self.state.joined.is_some() || self.saved.is_empty() {
+            return;
+        }
+        // A plain STATUS has Android's supplicant tell every listener again
+        // that the network is connected; this one leaves that out.
+        let status = match r.control.ask("STATUS-NO_EVENTS") {
+            Ok(status) => status,
+            Err(e) => return self.lost(e),
+        };
+        let fields = supplicant::fields(&status);
+        if fields.get("wpa_state") != Some(&"COMPLETED") {
+            return;
+        }
+        let Some(ssid) = fields.get("ssid").and_then(|name| supplicant::unescape(name).ok()) else { return };
+        let Some(saved) = self.saved.iter().find(|s| s.ssid == ssid) else {
+            // Only a kept network is one the supplicant is configured to
+            // join, so this is a connection made by something else, and no
+            // page should claim it.
+            return;
+        };
+        let (name, security) = (saved.name.clone(), saved.security);
+        let _ = skyward_sys::kmsg(&format!("the supplicant joined {name} by itself"));
+        // Nothing is being kept for it: it is already among what is kept.
+        self.keep = None;
+        self.state.joined = Some(Joined { ssid, name, security, stage: Stage::Joining });
+        // The event the supplicant sent, now that the page knows which
+        // network it was about: the address is asked for from there.
+        self.joining(&Told::Connected);
     }
 
     /// Ask the network for an address, on a thread of its own.
@@ -542,6 +884,11 @@ impl Station {
         if let Some(j) = &mut self.state.joined {
             j.stage = Stage::Connected(link);
         }
+        // The network answered, which is what keeping its password waits for:
+        // a join that never got this far keeps nothing.
+        if let Some(network) = self.keep.take() {
+            self.keep_saved(network);
+        }
         if let Some(dns) = look {
             self.probe(dns);
         }
@@ -612,8 +959,12 @@ impl Station {
                 }
             }
         }
+        let adopt = self.state.joined.is_none() && !self.saved.is_empty() && now >= r.adopt_at;
         if now >= r.polled_at + POLL {
             self.poll_link();
+        }
+        if adopt {
+            self.adopt();
         }
         if let Some(r) = &self.running {
             if r.lease.is_some() && r.counted.is_none_or(|c| now >= c.at + TRAFFIC) {
@@ -730,7 +1081,7 @@ fn place(file: &Firmware) -> Result<()> {
 }
 
 /// Start the supplicant on the interface, and wait for its control socket.
-fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
+fn start_supplicant(cfg: &Config, libraries: Option<&Path>, saved: &[Saved]) -> Result<Child> {
     let home = Path::new(HOME);
     let sockets = home.join("sockets");
     fs::create_dir_all(&sockets).with_context(|| format!("make {}", sockets.display()))?;
@@ -738,9 +1089,19 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
     std::os::unix::fs::chown(&sockets, Some(WIFI), Some(WIFI)).with_context(|| format!("give {} to the supplicant", sockets.display()))?;
     fs::set_permissions(&sockets, fs::Permissions::from_mode(0o770)).with_context(|| format!("keep {} to the supplicant", sockets.display()))?;
     let settings = home.join("wpa_supplicant.conf");
-    fs::write(&settings, format!("ctrl_interface={}\nupdate_config=0\np2p_disabled=1\npmf=1\nsae_pwe=2\n", sockets.display()))
+    // The runtime configuration contains passphrases too. Create it
+    // privately from the first byte; root starts the supplicant before it
+    // drops privileges, and the Wi-Fi account owns later reads.
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut config = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600)
+        .open(&settings).with_context(|| format!("make {}", settings.display()))?;
+    config.set_permissions(fs::Permissions::from_mode(0o600))?;
+    config.write_all(supplicant::config_text(&sockets.to_string_lossy(), saved).as_bytes())
         .with_context(|| format!("write {}", settings.display()))?;
-    fs::set_permissions(&settings, fs::Permissions::from_mode(0o644)).with_context(|| format!("open {} to the supplicant", settings.display()))?;
+    std::os::unix::fs::chown(&settings, Some(WIFI), Some(WIFI))
+        .with_context(|| format!("give {} to the supplicant", settings.display()))?;
+    drop(config);
     let socket = sockets.join(&cfg.interface);
     // One an earlier run left would answer nothing.
     if socket.exists() {
