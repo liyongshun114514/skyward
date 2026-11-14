@@ -38,9 +38,11 @@ const HOME: &str = "/skyward/run/supplicant";
 /// make its socket.
 const WIFI: u32 = 1010;
 
-/// How long the driver may take to make its interface, the chip's firmware
-/// loading meanwhile.
-const INTERFACE_WAIT: Duration = Duration::from_secs(20);
+/// How long the driver may take to make its interface: the chip's own
+/// processor is started first, loads its firmware from the modem partition
+/// and brings its data service up, which takes half a minute on a phone
+/// that has just been powered on.
+const INTERFACE_WAIT: Duration = Duration::from_secs(60);
 
 /// How long the supplicant may take to open its control socket.
 const SOCKET_WAIT: Duration = Duration::from_secs(10);
@@ -688,20 +690,40 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
     iface::set_up(&cfg.interface, true)
 }
 
-/// Put a file the driver asks for where the firmware loader looks.
+/// Put a file the driver asks for where the firmware loader looks. A file
+/// the phone does not have is left out: the driver goes on with what it
+/// has of its own, and the settings one carries are not worth the driver
+/// never starting at all.
 fn place(file: &Firmware) -> Result<()> {
     let to = Path::new(FIRMWARE).join(&file.name);
     let dir = to.parent().expect("a firmware file is in a folder");
     fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
     let bytes = match &file.partition {
-        None => fs::read(&file.path).with_context(|| format!("read {}", file.path))?,
+        None => match fs::read(&file.path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                skyward_sys::kmsg(&format!("{} is not there; the driver goes without it", file.path))?;
+                return Ok(());
+            }
+            Err(e) => return Err(e).with_context(|| format!("read {}", file.path)),
+        },
         Some(partition) => {
             let at = Path::new(PARTITIONS).join(partition);
             fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
             skyward_block::mount::mount_ro(&Path::new(skyward_block::BY_NAME).join(partition), &at)?;
-            let read = fs::read(at.join(&file.path)).with_context(|| format!("read {} on {partition}", file.path));
+            let from = at.join(&file.path);
+            let read: Result<Option<Vec<u8>>> = match from.exists() {
+                true => fs::read(&from).map(Some).with_context(|| format!("read {} on {partition}", file.path)),
+                false => {
+                    skyward_sys::kmsg(&format!("{} is not on {partition}; the driver goes without it", file.path))?;
+                    Ok(None)
+                }
+            };
             skyward_block::mount::umount(&at)?;
-            read?
+            match read? {
+                Some(bytes) => bytes,
+                None => return Ok(()),
+            }
         }
     };
     fs::write(&to, bytes).with_context(|| format!("write {}", to.display()))

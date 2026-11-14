@@ -7,6 +7,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 mod avb;
+mod described;
 
 use skyward_bootimg::{BootImage, Ramdisk};
 
@@ -84,6 +85,25 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Take what a device's own partitions say of the programs they carry
+    /// out of its stock build's full update package on its server: the
+    /// init scripts, the service descriptions, the accounts and the build
+    /// properties of each partition that carries such programs, written
+    /// under `out` as the partition and then the path in it. Only the
+    /// parts of the package that hold these files are downloaded, each
+    /// checked against the package's own sum of it.
+    Described {
+        /// The device configuration, devices/<codename>.toml.
+        #[arg(long)]
+        config: PathBuf,
+        /// A partition to take them out of; vendor, odm and system_ext
+        /// when none is named.
+        #[arg(long = "partition")]
+        partitions: Vec<String>,
+        /// The folder to write the files under, which is not there yet.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -107,6 +127,10 @@ fn main() -> Result<()> {
         }
         Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, out } => {
             let size = partition_size(&stock)?;
+            // The bootloader refuses an image whose vbmeta names a smaller
+            // rollback index than the one it keeps for the slot, unlocked or
+            // not, so the stock image's own is kept.
+            let rollback = rollback_index(&stock)?;
             let mut img = BootImage::read(&stock)?;
             let mut rd = Ramdisk::decode(&img.ramdisk)?;
             // A stock recovery ramdisk has no third-party tree; refuse to build
@@ -150,7 +174,7 @@ fn main() -> Result<()> {
             rd.replace(paths::PROP_DEFAULT, props)?;
             img.ramdisk = rd.encode()?;
             let bytes = img.to_bytes()?;
-            write(&out, &img, &avb::footed(&bytes, "recovery", size, &Sha256::digest(&bytes))?)
+            write(&out, &img, &avb::footed(&bytes, "recovery", size, &Sha256::digest(&bytes), rollback)?)
         }
         Cmd::Stock { config, out } => {
             let stock = skyward_config::DeviceConfig::load(&config)?.stock.with_context(|| format!("{} names no stock build", config.display()))?;
@@ -159,6 +183,11 @@ fn main() -> Result<()> {
                 Some(out) => take_stock_recovery(&stock, &out),
                 None => Ok(()),
             }
+        }
+        Cmd::Described { config, partitions, out } => {
+            let stock = skyward_config::DeviceConfig::load(&config)?.stock.with_context(|| format!("{} names no stock build", config.display()))?;
+            let partitions = if partitions.is_empty() { skyward_programs::phone::PARTITIONS.map(str::to_string).to_vec() } else { partitions };
+            described::take(&stock.package, &partitions, &out)
         }
     }
 }
@@ -210,6 +239,27 @@ fn partition_size(stock: &Path) -> Result<usize> {
         stock.display()
     );
     Ok(usize::try_from(size)?)
+}
+
+/// The rollback index the stock image's vbmeta names, which the bootloader
+/// keeps for the slot and compares with the vbmeta of every image it starts:
+/// an image naming a smaller one is refused as a downgrade.
+fn rollback_index(stock: &Path) -> Result<u64> {
+    let field = |bytes: &[u8]| u64::from_be_bytes(bytes.try_into().expect("eight bytes"));
+    let mut file = File::open(stock).with_context(|| format!("open {}", stock.display()))?;
+    let size = file.metadata().with_context(|| format!("stat {}", stock.display()))?.len();
+    ensure!(size >= 64, "{} is too short to hold an AVB footer", stock.display());
+    file.seek(SeekFrom::Start(size - 64)).with_context(|| format!("seek in {}", stock.display()))?;
+    let mut footer = [0u8; 64];
+    file.read_exact(&mut footer).with_context(|| format!("read {}", stock.display()))?;
+    ensure!(&footer[..4] == b"AVBf", "{} does not end in an AVB footer", stock.display());
+    let (offset, len) = (field(&footer[20..28]), field(&footer[28..36]));
+    ensure!(len >= 128 && offset + len <= size, "{} names its vbmeta image beyond its own end", stock.display());
+    file.seek(SeekFrom::Start(offset)).with_context(|| format!("seek in {}", stock.display()))?;
+    let mut header = [0u8; 128];
+    file.read_exact(&mut header).with_context(|| format!("read {}", stock.display()))?;
+    ensure!(&header[..4] == b"AVB0", "{} holds no vbmeta image where its footer points", stock.display());
+    Ok(field(&header[112..120]))
 }
 
 /// What a recovery image says about the build it is: the version and patch

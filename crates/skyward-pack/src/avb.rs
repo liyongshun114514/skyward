@@ -19,9 +19,9 @@ const RELEASE: &[u8] = b"skyward-pack";
 /// `image` grown to fill a `partition_size`-byte partition named
 /// `partition`: the image, its vbmeta image from the next block on, and the
 /// footer locating that in the partition's last bytes, zeros between.
-pub fn footed(image: &[u8], partition: &str, partition_size: usize, salt: &[u8]) -> Result<Vec<u8>> {
+pub fn footed(image: &[u8], partition: &str, partition_size: usize, salt: &[u8], rollback_index: u64) -> Result<Vec<u8>> {
     let digest = Sha256::new().chain_update(salt).chain_update(image).finalize();
-    let vbmeta = vbmeta(&hash_descriptor(image.len() as u64, partition, salt, &digest));
+    let vbmeta = vbmeta(&hash_descriptor(image.len() as u64, partition, salt, &digest), rollback_index);
     let offset = image.len().next_multiple_of(BLOCK);
     let end = offset + vbmeta.len().next_multiple_of(BLOCK);
     ensure!(
@@ -71,7 +71,7 @@ fn hash_descriptor(image_size: u64, partition: &str, salt: &[u8], digest: &[u8])
 
 /// An unsigned vbmeta image holding `descriptors`: its header, an empty
 /// authentication block and the descriptors as its auxiliary block.
-fn vbmeta(descriptors: &[u8]) -> Vec<u8> {
+fn vbmeta(descriptors: &[u8], rollback_index: u64) -> Vec<u8> {
     let aux = descriptors.len().next_multiple_of(64);
     let mut v = Vec::with_capacity(HEADER_LEN + aux);
     v.extend_from_slice(b"AVB0");
@@ -84,9 +84,9 @@ fn vbmeta(descriptors: &[u8]) -> Vec<u8> {
     v.extend_from_slice(&0u32.to_be_bytes());
     // The offsets and sizes of the hash, the signature, the public key, its
     // metadata and the descriptors, then the rollback index.
-    let n = descriptors.len();
-    for field in [0, 0, 0, 0, n, 0, n, 0, 0, n, 0] {
-        v.extend_from_slice(&(field as u64).to_be_bytes());
+    let n = descriptors.len() as u64;
+    for field in [0, 0, 0, 0, n, 0, n, 0, 0, n, rollback_index] {
+        v.extend_from_slice(&field.to_be_bytes());
     }
     // The flags and the rollback index location.
     v.extend_from_slice(&0u32.to_be_bytes());
@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn the_footer_is_avbtools_byte_for_byte() {
         for len in [4096, 1000] {
-            let got = footed(&vec![b'S'; len], "recovery", 81920, &SALT).unwrap();
+            let got = footed(&vec![b'S'; len], "recovery", 81920, &SALT, 0).unwrap();
             assert!(got == avbtool(len), "a {len}-byte image");
         }
     }
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn an_image_that_leaves_no_room_for_its_vbmeta_and_footer_is_refused() {
         let image = vec![b'S'; 8192];
-        assert!(footed(&image, "recovery", 16384, &SALT).is_ok(), "a block each for the vbmeta image and the footer");
-        assert!(footed(&image, "recovery", 12288, &SALT).is_err());
+        assert!(footed(&image, "recovery", 16384, &SALT, 0).is_ok(), "a block each for the vbmeta image and the footer");
+        assert!(footed(&image, "recovery", 12288, &SALT, 0).is_err());
     }
 }

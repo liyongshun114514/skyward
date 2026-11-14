@@ -28,6 +28,10 @@ pub fn set_mtp(on: bool) {
 /// Ask init for `config` and wait until it is in place. Going to "none"
 /// also waits for adbd to be gone, so its function is free.
 pub fn set(config: &str, timeout: Duration) -> Result<()> {
+    // OnePlus's init hands the port over only once this switch lets it, and
+    // nothing sets it in a recovery: a switch left over from the system
+    // keeps every later request off the port.
+    let _ = set_prop("sys.usb.config_disable", "0");
     set_prop("sys.usb.config", config)?;
     wait_prop("sys.usb.state", config, timeout)?;
     if config == "none" {

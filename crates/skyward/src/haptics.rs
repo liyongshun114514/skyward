@@ -85,7 +85,7 @@ impl Haptics {
     /// only as it is played.
     pub fn open(cfg: &skyward_config::Haptics) -> Result<Haptics> {
         let (path, dev) = motor()?;
-        let hz = resonance(&cfg.resonance)?;
+        let hz = resonance(&cfg.resonance, cfg.resonance_in_hertz)?;
         let click = match cfg.click {
             Some(id) => {
                 eprintln!("haptics {}: clicks with waveform {id}, ticks made for a motor swinging at {hz} Hz", path.display());
@@ -185,11 +185,33 @@ fn share(strength: &Strength, position: f32) -> f32 {
 
 /// The motor's resonant frequency in hertz, from the file the driver says
 /// it in, in tenths of a hertz.
-fn resonance(file: &str) -> Result<f32> {
-    let text = fs::read_to_string(file).with_context(|| format!("read {file}"))?;
-    let tenths: u32 = text.split_whitespace().next().and_then(|n| n.parse().ok()).with_context(|| format!("{file} holds {text:?}"))?;
-    ensure!(tenths > 0, "{file} says the motor swings at 0 Hz");
-    Ok(tenths as f32 / 10.0)
+fn resonance(file: &str, in_hertz: bool) -> Result<f32> {
+    // A driver that has just started has not driven its motor yet and says
+    // 0; it measures it a moment later, so it is asked again.
+    let mut said = 0;
+    for _ in 0..15 {
+        let text = fs::read_to_string(file).with_context(|| format!("read {file}"))?;
+        said = text.split_whitespace().next().and_then(|n| n.parse().ok()).with_context(|| format!("{file} holds {text:?}"))?;
+        if said > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    if said == 0 {
+        // The period the driver measures the motor's swing in, in the file
+        // beside this one, says the same as the frequency not yet written.
+        let beside = std::path::PathBuf::from(file).with_file_name("t_lra_us");
+        if let Ok(text) = fs::read_to_string(&beside) {
+            if let Some(us) = text.split_whitespace().next().and_then(|n| n.parse::<u32>().ok()).filter(|n| *n > 0) {
+                return Ok(1_000_000.0 / us as f32);
+            }
+        }
+    }
+    ensure!(said > 0, "{file} says the motor swings at 0 Hz");
+    Ok(match in_hertz {
+        true => said as f32,
+        false => said as f32 / 10.0,
+    })
 }
 
 /// A click's samples at [`RATE`] for a motor that swings at `hz`: whole

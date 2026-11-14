@@ -118,6 +118,9 @@ impl Backlight {
     /// Light the panel at `level` of its normal maximum, or turn it off
     /// with `None`. The file is written only when the raw level changes.
     fn show(&mut self, level: Option<f32>) -> Result<()> {
+        if self.top == 0 {
+            return Ok(());
+        }
         let raw = level.map_or(0, |v| ((v.clamp(0.0, 1.0) * self.top as f32).round() as u32).max(1));
         if raw != self.level {
             fs::write(&self.path, raw.to_string()).with_context(|| format!("write {}", self.path.display()))?;
@@ -137,10 +140,13 @@ impl Backlight {
 /// their factory tests drive the panel to, on the backlight's own scale:
 /// the 13 Ultra's panels give that level as well, and it comes to the same
 /// half of their range as the normal maximum they give.
-const NORMAL_MAX: [(&str, &str); 3] = [
+const NORMAL_MAX: [(&str, &str); 4] = [
     ("mi,normal-max-brightness-clone", "mi,max-brightness-clone"),
     ("mi,max-brightness-normal", "qcom,mdss-dsi-bl-max-level"),
     ("mi,mdss-dsi-fac-bl-max-level", "qcom,mdss-dsi-bl-max-level"),
+    // OnePlus's panels give it in a property of their own, beside the whole
+    // range.
+    ("oplus,dsi-bl-normal-max-level", "qcom,mdss-dsi-bl-max-level"),
 ];
 
 /// The raw backlight level, out of `max`, at the panel's normal maximum.
@@ -689,7 +695,7 @@ struct Pending {
 }
 
 /// Start installing the package the system asked for.
-fn install_asked(cfg: &DeviceConfig, app: &App, pending: Pending) -> Result<Installer> {
+fn install_asked(programs: &[Service], app: &App, pending: Pending) -> Result<Installer> {
     if pending.needs == Needs::Cache {
         let cache = wipe::cache()?.context("the phone has no cache partition")?;
         let at = Path::new(&cache.mount_point);
@@ -698,7 +704,7 @@ fn install_asked(cfg: &DeviceConfig, app: &App, pending: Pending) -> Result<Inst
             mount::mount_ro(Path::new(&fstab::device(&cache)?), at)?;
         }
     }
-    Installer::asked(pending.package, pending.retry, detach(cfg.services.clone()), install_options(app))
+    Installer::asked(pending.package, pending.retry, detach(programs.to_vec()), install_options(app))
 }
 
 /// Where a reboot rescue asked for goes: the target, and whether it is
@@ -1044,8 +1050,18 @@ fn wait(fds: &[i32], timeout_ms: i32) -> Result<()> {
 }
 
 /// Run the pages. What `request`, read from misc, asks for decides the
-/// first of them; asking for nothing, they start at `start`.
-pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, start: Screen, dump: Option<&Path>) -> Result<()> {
+/// first of them; asking for nothing, they start at `start`. `programs`
+/// are the phone's own that the recovery keeps running: the
+/// configuration's, and those the phone's partitions name for its keys.
+pub fn run(
+    cfg: &DeviceConfig,
+    programs: &[Service],
+    font: &Path,
+    mono: &Path,
+    request: bcb::Request,
+    start: Screen,
+    dump: Option<&Path>,
+) -> Result<()> {
     if cfg.display.density == 0 {
         return Err(anyhow!("{}: [display] density is required to lay out the UI", cfg.device.codename));
     }
@@ -1053,14 +1069,25 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let fonts = Fonts::load(font, 0, mono)?;
     let mut surface = KmsSurface::open("/dev/dri/card0")?;
     let (w, h) = surface.size();
+    // The panel is left as the boot loader and the kernel left it: a
+    // touchscreen whose frames the phone's own service turns into touches,
+    // as OnePlus's is, stops reporting once the panel is put to rest, and
+    // no dark frame brings it back.
     eprintln!("display {}", surface.describe());
     let mut inputs = Inputs::open(w, h, cfg.touch.writes.clone())?;
     let started = Instant::now();
     let mut touch_known = false;
+    let mut touch_reported = false;
     // adbd and fastbootd ask over it to go over to fastboot and back.
     let control = Control::open()?;
     let mut haptics = cfg.haptics.as_ref().map(Haptics::open).transpose()?;
-    let mut backlight = Backlight::open()?;
+    let mut backlight = match Backlight::open() {
+        Ok(b) => b,
+        Err(e) => {
+            crate::bootlog::line(format!("the backlight is not set: {e:#}"));
+            Backlight { path: PathBuf::new(), top: 0, level: 1 }
+        }
+    };
     let first = match &request.work {
         Work::Fastboot => Screen::Fastboot,
         Work::PromptWipeData => Screen::CantStart,
@@ -1108,7 +1135,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let mut arriving = Some(Incoming::Arrived);
     // The mount page shows the partitions as they are when it opens and
     // after each change; why they cannot be read is the page's to say.
-    let mounts = || read_mounts(&cfg.services).map_err(|e| format!("{e:#}"));
+    let mounts = || read_mounts(programs).map_err(|e| format!("{e:#}"));
 
     let mut screen = Canvas::new(w, h);
     // A page sliding over another draws on three screens' worth of canvas
@@ -1233,12 +1260,12 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         Work::Sideload { .. } => {
             app.start_sideload();
-            installer = Some(Installer::start(detach(cfg.services.clone()), install_options(&app))?);
+            installer = Some(Installer::start(detach(programs.to_vec()), install_options(&app))?);
             sideloading = true;
         }
         Work::Rescue => {
             app.start_rescue();
-            installer = Some(Installer::rescue(detach(cfg.services.clone()), install_options(&app))?);
+            installer = Some(Installer::rescue(detach(programs.to_vec()), install_options(&app))?);
             sideloading = true;
         }
         Work::Update(update) => {
@@ -1259,7 +1286,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         decryptor = Some(Decryptor::start(decrypt::Job::Open)?);
                         pending = Some(wanted);
                     }
-                    Needs::Nothing | Needs::Cache => installer = Some(install_asked(cfg, &app, wanted)?),
+                    Needs::Nothing | Needs::Cache => installer = Some(install_asked(programs, &app, wanted)?),
                 }
             }
         }
@@ -2077,7 +2104,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         app.asked_locked(user, now);
                         pending = Some(wanted);
                     }
-                    _ => installer = Some(install_asked(cfg, &app, wanted)?),
+                    _ => installer = Some(install_asked(programs, &app, wanted)?),
                 }
             }
         }
@@ -2102,12 +2129,17 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             Some(c) => c.requests()?,
             None => Vec::new(),
         };
+        let touching = inputs.read()?;
+        if !touching.is_empty() && !touch_reported {
+            touch_reported = true;
+            crate::bootlog::line(format!("the panel reports {} events", touching.len()));
+        }
         let incoming = arriving
             .take()
             .into_iter()
             .chain(drive_told.map(Incoming::Drive))
             .chain(requests.into_iter().map(Incoming::Asked))
-            .chain(inputs.read()?.into_iter().map(Incoming::Input));
+            .chain(touching.into_iter().map(Incoming::Input));
         for came in incoming {
             let effects = match came {
                 Incoming::Arrived => app.arrive(),
@@ -2231,7 +2263,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         if !withhold(&mut transfer, &mut app, now)? {
                             continue;
                         }
-                        installer = Some(Installer::start(detach(cfg.services.clone()), install_options(&app))?);
+                        installer = Some(Installer::start(detach(programs.to_vec()), install_options(&app))?);
                         sideloading = true;
                     }
                     Effect::InstallFile(place, path) => {
@@ -2239,14 +2271,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         if !withhold(&mut transfer, &mut app, now)? {
                             continue;
                         }
-                        installer = Some(Installer::open(in_place(place, &path), detach(cfg.services.clone()), install_options(&app))?);
+                        installer = Some(Installer::open(in_place(place, &path), detach(programs.to_vec()), install_options(&app))?);
                     }
                     Effect::InstallPath(path) => {
                         ensure!(installer.is_none(), "an installer is running already");
                         if !withhold(&mut transfer, &mut app, now)? {
                             continue;
                         }
-                        installer = Some(Installer::open(PathBuf::from(path), detach(cfg.services.clone()), install_options(&app))?);
+                        installer = Some(Installer::open(PathBuf::from(path), detach(programs.to_vec()), install_options(&app))?);
                     }
                     Effect::Flash { partition, pick } => {
                         let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
@@ -2437,7 +2469,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                             parts,
                             device: cfg.device.codename.clone(),
                             skipped: backup::data_skipped(&cfg.backup.data_skipped),
-                            detach: detach(cfg.services.clone()),
+                            detach: detach(programs.to_vec()),
                         };
                         backuper = Some(backup::Worker::start(backup::Task::Restore(task))?);
                         app.backup_started(true, place, true);

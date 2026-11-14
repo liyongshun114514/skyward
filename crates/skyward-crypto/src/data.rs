@@ -112,7 +112,16 @@ fn open(service: &KeyMint) -> Result<Opened> {
         let holds = skyward_block::probe::filesystem(&mapped)?;
         let entry = entries.iter().find(|e| holds.as_ref() == Some(&e.filesystem)).unwrap_or(&entries[0]);
         let checked = match entry.extras.iter().any(|e| e == "check") {
-            true => Some(skyward_block::fsck::check(&mapped, &entry.filesystem)?),
+            // A recovery whose ramdisk carries no checker the program can
+            // run, as OnePlus's does not, mounts the partition unchecked
+            // rather than not at all.
+            true => match skyward_block::fsck::check(&mapped, &entry.filesystem) {
+                Ok(checked) => Some(checked),
+                Err(e) => {
+                    eprintln!("{} is not checked: {e:#}", mapped.display());
+                    None
+                }
+            },
             false => None,
         };
         std::fs::create_dir_all(MOUNT).with_context(|| format!("make {MOUNT}"))?;

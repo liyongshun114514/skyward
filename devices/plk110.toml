@@ -1,0 +1,146 @@
+[device]
+codename = "plk110"
+brand = "OnePlus"
+model = "OnePlus 15"
+ab = true
+soc = { hans = "第五代骁龙®8至尊版移动平台", hant = "Snapdragon® 8 Elite Gen 5 行動平台", en = "Snapdragon® 8 Elite Gen 5 Mobile Platform" }
+os_version_prop = "ro.build.display.id"
+
+[display]
+width = 1272
+height = 2772
+density = 560
+diagonal = 6.78
+# What the stock system rounds a page's corners to, from its window manager.
+corner_radius = 176
+
+[modules]
+sources = ["vendor_boot", "vendor_dlkm", "vendor", "system_dlkm"]
+# The touchscreen: Synaptics' S3910 behind OnePlus's host-based processing
+# layer, which keeps the frames the panel sends in the kernel and hands them
+# to the phone's own touch service, whose input device the touches come in
+# on. Its dependencies come from modules.dep and load first.
+load = ["msm_drm", "qcom-hv-haptics", "oplus_hbp_core", "oplus_bsp_tp_hbp_syna_s3910"]
+
+# The touch frames are turned into touches by the phone's own touch service,
+# which a recovery runs none of: without it the panel's input device stays
+# silent. It is started below, as the phone's init starts it, and the device
+# nodes its kernel layer makes are handed to the account it runs as.
+[[owners]]
+user = "system"
+group = "system"
+mode = 0o660
+paths = ["/dev/hbp0", "/dev/hbp_core", "/dev/tcm_hbp0"]
+
+# The firmware of the WLAN chip and the apps the secure world loads for the
+# secure element's service are on the modem partition, which the phone
+# mounts at /vendor/firmware_mnt; Skyward shows it at /vendor/firmware as
+# well, where the kernel's firmware loader looks.
+[firmware]
+partition = "modem"
+
+# The persist partition, which the phone mounts at /mnt/vendor/persist and
+# its own recovery leaves unmounted. The secure world keeps its own files
+# there, through the listeners qseecomd registers: among them what the key
+# service needs to use a key that cannot be rolled back. The WLAN's MAC
+# address is there as well.
+[partitions]
+mounted = ["persist", "vendor_dlkm", "system_dlkm"]
+
+# Each of the phone's own programs below runs as the user and in the groups
+# its init script on the phone gives it, so that what it makes in the data
+# partition is whose it is when the phone runs it. OnePlus's own accounts,
+# among them the weaver's, are read from its odm partition's passwd file.
+
+# What the phone's own init runs once the system has finished starting. The
+# kernel starts both CPU clusters on the performance governor, which holds
+# them at their highest clock, and Qualcomm's idle driver keeps idle CPUs
+# from powering down until it is told otherwise; the script hands the
+# clusters to WALT, lets idle CPUs power down and sets how the memory bus
+# scales. Without it the CPUs stay at their highest clock and voltage even
+# while idle, and the phone slowly heats up.
+[[service]]
+path = "/vendor/bin/sh"
+args = ["/vendor/bin/init.kernel.post_boot.sh"]
+libraries = ["/system/lib64", "/vendor/lib64"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The phone's own touch service: the frames OnePlus's host-based processing
+# layer keeps in the kernel are turned into touches by this program, and
+# without it the panel's input device reports nothing. It runs as the
+# phone's init runs it, as root in the system group, and opens the nodes its
+# kernel layer makes, which are handed to system:system above.
+[[service]]
+path = "/odm/bin/hw/vendor-oplus-hardware-touch-V2-hbp5-service"
+libraries = ["/system/lib64", "/vendor/lib64", "/odm/lib64"]
+ready_service = "vendor.oplus.hardware.touch.IOplusTouch/default"
+groups = ["root", "system"]
+capabilities = ["SYS_NICE"]
+
+# WLAN: Qualcomm's Peach on PCIe, driven by qca_cld3_peach_v2 over the cnss2
+# platform driver. The vendor's cfg80211 asks for rfkill, one of the kernel's
+# own modules in system_dlkm, which the system loads before any of the
+# vendor's and a recovery leaves out. Once fs_ready is written, cnss2 powers
+# the chip up and loads its firmware from the modem partition, and wlan0
+# appears. The driver reads its settings and MAC address through the
+# firmware loader, from links the vendor partition keeps in its own firmware
+# folder, into the vendor partition and into persist. wpa_supplicant runs on
+# the recovery's own libraries before the vendor partition's: the vendor
+# partition carries its own copies of the lowest of them, and a program
+# loading those would not be understood by the recovery's service directory.
+[wlan]
+modules = ["rfkill", "cnss2", "qca_cld3_peach_v2"]
+writes = [{ path = "/sys/kernel/cnss/fs_ready", value = "1" }]
+# The driver asks the firmware loader for its settings as
+# `wlan/WCNSS_qcom_cfg.ini`, which the phone's own script keeps in persist;
+# its MAC address file, `wlan/qca_cld/peach_v2/wlan_mac.bin`, is not there
+# on this phone, and the driver makes one up from what the chip reports.
+firmware = [{ name = "wlan/WCNSS_qcom_cfg.ini", path = "/mnt/vendor/persist/wlan/WCNSS_qcom_cfg.ini" }]
+interface = "wlan0"
+supplicant = "/vendor/bin/hw/wpa_supplicant"
+libraries = ["/system/lib64", "/vendor/lib64", "/odm/lib64"]
+service = "android.hardware.wifi.supplicant.ISupplicant/default"
+probe = "http://conn1.oppomobile.com/generate_204"
+
+# qcom-hv-haptics. The driver's node gives the motor's resonant frequency in
+# hertz itself, 130 on this phone, where most drivers give tenths of one;
+# the click is made from samples at that frequency, which the driver plays
+# at up to the 8300 mV its device tree gives samples.
+[haptics]
+resonance = "/sys/class/qcom-haptics/lra_frequency_hz"
+resonance_in_hertz = true
+strength = { lightest = 0.25, strongest = 0.75 }
+
+# The partitions a backup of the baseband and EFS takes: the baseband's
+# settings, with the IMEI, and the sensors' calibration. And what of the
+# data partition a backup leaves out because the secure world keeps it in
+# step with itself: its own storage, its apps' data, the secure element's
+# state, the trusted user interface's, and the fingerprint templates.
+[backup]
+efs = ["modemst1", "modemst2", "fsg", "fsc", "persist"]
+data_skipped = [
+    "vendor/tzstorage",
+    "vendor/qtee",
+    "vendor/secure_element",
+    "vendor/tui",
+    "vendor/shsusr",
+    "vendor/fingerprint",
+    "vendor/fingerprint_ori",
+]
+
+# Where the phone's own programs keep logs in the data partition: the
+# minidumps, what the modem, Wi-Fi and Bluetooth leave when they crash, and
+# what OnePlus's log services keep of each part of the phone.
+[wipe]
+logs = [
+    "/data/vendor/tombstones",
+    "/data/vendor/ramdump",
+    "/data/vendor/ramdump_ssr",
+    "/data/vendor/ssrdump",
+    "/data/vendor/log",
+    "/data/vendor/olog",
+    "/data/vendor/wifi",
+    "/data/vendor/dumpsys",
+]
