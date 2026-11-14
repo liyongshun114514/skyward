@@ -61,6 +61,7 @@ enum Click {
     /// Samples made at the motor's resonant frequency, which the driver
     /// plays as they are, at `rate` a second.
     Samples { data: Vec<i8>, rate: u32 },
+    Made,
 }
 
 impl Haptics {
@@ -234,6 +235,7 @@ fn upload(dev: &File, click: &Click, share: f32) -> Result<Loaded> {
     let mut kept: [i16; 3] = [0; 3];
     let mut samples = Samples { index: 0, length: 0, rate: shapes::RATE, data: std::ptr::null() };
     let (len, data) = match click {
+        Click::Made => anyhow::bail!("a made click must have samples before upload"),
         Click::Kept(id) => {
             kept[0] = *id;
             (std::mem::size_of_val(&kept), kept.as_mut_ptr())
@@ -270,6 +272,7 @@ fn upload(dev: &File, click: &Click, share: f32) -> Result<Loaded> {
         return Err(io::Error::last_os_error().into());
     }
     let length = match click {
+        Click::Made => anyhow::bail!("a made click must have samples before upload"),
         Click::Kept(id) => {
             let [_, seconds, millis] = kept;
             let length = Duration::from_secs(u64::try_from(seconds)?) + Duration::from_millis(u64::try_from(millis)?);
@@ -290,13 +293,6 @@ fn play(dev: &mut File, id: i16) -> io::Result<()> {
 }
 
 /// Take the effect in slot `id` away, which stops it for good.
-fn erase(dev: &File, id: i16) -> io::Result<()> {
-    if unsafe { libc::ioctl(dev.as_raw_fd(), EVIOCRMFF as _, libc::c_int::from(id)) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-e effect in slot `id` away, which stops it for good.
 fn erase(dev: &File, id: i16) -> io::Result<()> {
     if unsafe { libc::ioctl(dev.as_raw_fd(), EVIOCRMFF as _, libc::c_int::from(id)) } < 0 {
         return Err(io::Error::last_os_error());

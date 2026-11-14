@@ -43,6 +43,10 @@ mod systems;
 mod ui;
 #[cfg(target_os = "android")]
 mod updates;
+// PLK110 uses haptics/shapes.rs at runtime; keep the upstream waveform
+// module's independent regression tests available on the host.
+#[cfg(test)]
+mod waveform;
 #[cfg(target_os = "android")]
 mod wipe;
 #[cfg(target_os = "android")]
@@ -525,10 +529,10 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     adopt_installed_version(&props)?;
     // Without logd the phone's own programs still run, and only what they
     // log is lost, so why it did not start goes to the kernel log.
-    if let Some(logd) = &cfg.logd {
-        if let Err(e) = start_logd(logd) {
-            skyward_sys::kmsg(&format!("logd not started: {e:#}"))?;
-        }
+    if let Some(logd) = &cfg.logd
+        && let Err(e) = start_logd(logd)
+    {
+        skyward_sys::kmsg(&format!("logd not started: {e:#}"))?;
     }
     let services: Vec<Started> = cfg.services.iter().filter(|s| s.runs_on(&props)).cloned().map(Started::from).collect();
     // The drivers ask for their firmware by name, and the kernel looks only
@@ -821,10 +825,11 @@ fn recovery() -> Result<()> {
         // off is taken up again as a retry; one that follows the kernel
         // stopping is not started at all.
         #[cfg(target_os = "android")]
-        if let bcb::Work::Update(update) = &request.work {
-            if update.retry == 0 && !ui::panicked() {
-                bcb::write(&misc, &message.with_retry(1))?;
-            }
+        if let bcb::Work::Update(update) = &request.work
+            && update.retry == 0
+            && !ui::panicked()
+        {
+            bcb::write(&misc, &message.with_retry(1))?;
         }
         // The kernel starts the clock from the RTC, days after 1970 on these
         // phones; the screen and the files written still work without the
@@ -854,10 +859,11 @@ fn recovery() -> Result<()> {
             // erasing them, which may take super with them, and undoing
             // shared blocks, which writes to the slot's own.
             let root = Path::new("/");
+            bootlog::snapshot("before the screen");
             let first = match ui::splash(&root.join(ramdisk::FONT), &root.join(ramdisk::MONO)) {
-                Ok(surface) => Some(surface),
+                Ok(surface) => surface,
                 Err(e) => {
-                    crate::bootlog::line(format!("the start screen was not shown: {e:#}"));
+                    bootlog::line(format!("the start screen was not shown: {e:#}"));
                     None
                 }
             };
@@ -865,14 +871,12 @@ fn recovery() -> Result<()> {
             if !matches!(request.work, bcb::Work::Fastboot | bcb::Work::WipeAb { .. } | bcb::Work::UnshareBlocks) {
                 programs.extend(prepare(&cfg, booted_slot()?)?);
             }
-            {
-                let ran = ui::run(&cfg, &programs, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO), request, Screen::Home, None, first);
-                crate::bootlog::line(match &ran {
-                    Ok(()) => "the pages closed".to_string(),
-                    Err(e) => format!("the pages failed: {e:#}"),
-                });
-                ran
-            }
+            let ran = ui::run(&cfg, &programs, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO), request, Screen::Home, None, first);
+            bootlog::line(match &ran {
+                Ok(()) => "the pages closed".to_string(),
+                Err(e) => format!("the pages failed: {e:#}"),
+            });
+            ran
         }
         #[cfg(not(target_os = "android"))]
         {

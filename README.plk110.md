@@ -1,10 +1,10 @@
 # Skyward · 一加 15（PLK110）移植与修复完整说明
 
-> 最新：**v19 已刷入 recovery_a，整分区回读一致；用户确认仅余解密问题**。已复现并修复 eSE 装载失败：libEseUtils.so 位于 /vendor/lib64/hw，而旧版库路径未覆盖。844 项测试通过、六个密钥程序的原厂链接器列依赖通过；未重启，Skyward v19 密码解密仍待 recovery 实测，第三方可解密不等于 Skyward 已验证。WLAN、字体和设备配置保持不变，ramdisk 61.27 MiB。先读 [PLK110-V19.md](PLK110-V19.md)；完整字库重建命令见 [PLK110-V18.md](PLK110-V18.md)，以下旧版子集命令已失效。
+> 当前开发版：**上游 v0.3.1 + PLK110 build 20**。用户已确认 v19 基线实际密码解密成功。本轮保留 v19 的安全链、完整压缩字体和设备适配，增加触觉反馈、Wi-Fi 记忆/自动连接、静态启动首屏，以及此 fork 的 GitHub 云更新。
 >
-> 以下保留 v16 的移植与重建背景，不将旧版“均已修复”文字视为实机验收结论。日期：2026-11-14。
+> 新功能与 fastbootd 的修改须单独实机验收；通过编译、单测或打包不等于手机运行通过。本轮不自动刷写、不重启、不尝试用户密码。最新重建与验证记录见 [PLK110-V20.md](PLK110-V20.md)，仓库来源见 [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md)。
 >
-> 本文档面向三类读者：想直接用镜像的人（看第 1、2、10 章）、想复现构建的人（看第 8、9 章）、想继续改代码的人（看第 4–7、11–14 章）。
+> **以下章节为 v16 历史记录，不是当前使用说明。** 字体子集命令和“振动不可用”等旧结论不得照用；完整字体打包以 PLK110-V18.md / PLK110-V20.md 为准。
 
 ---
 
@@ -104,7 +104,8 @@ Bootloader（AVB 校验 recovery_a，rollback_index=1）
 Skyward 把启动日志写在 misc 分区第 8192 字节起的 48 KB 里（`crates/skyward/src/bootlog.rs`），重启不丢：
 
 ```sh
-dd if=/dev/block/by-name/misc bs=4096 skip=2 count=14 2>/dev/null | tr -d '\0'
+dd if=/dev/block/by-name/misc bs=4096 skip=2 count=12 2>/dev/null > misc.bin
+# 在电脑上读取 misc.bin：只解释首个 NUL 之前的字节，不拼接残留尾部。
 ```
 
 v15 实际输出（节选）：
@@ -510,7 +511,8 @@ logs = ["/data/vendor/tombstones", "/data/vendor/ramdump", …]
 ### 11.1 读启动日志（最重要的一条命令）
 
 ```sh
-dd if=/dev/block/by-name/misc bs=4096 skip=2 count=14 2>/dev/null | tr -d '\0'
+dd if=/dev/block/by-name/misc bs=4096 skip=2 count=12 2>/dev/null > misc.bin
+# 在电脑上读取 misc.bin：只解释首个 NUL 之前的字节，不拼接残留尾部。
 ```
 
 - 位置：misc 分区偏移 8192，长度 48 KB（`bootlog.rs` 的 `START/LEN`），重启不丢；

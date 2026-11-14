@@ -74,12 +74,6 @@ pub fn save(kept: &[Saved]) -> Result<()> {
     with_writable_metadata(|| write_at(Path::new(FOLDER), Path::new(FILE), Path::new(WRITING), kept))
 }
 
-/// Take the record away, where one is kept. A record that is not there is
-/// what this wanted anyway.
-pub fn forget() -> Result<()> {
-    save(&[])
-}
-
 /// What the file holds, read from `path`. A file that is not there is no
 /// networks kept rather than a failure.
 fn read_at(path: &Path) -> Result<Vec<Saved>> {

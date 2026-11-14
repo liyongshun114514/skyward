@@ -69,7 +69,7 @@ fn a_tick_is_one_short_click_and_the_two_are_fifty_five_milliseconds_apart() {
     assert!((13.0..14.0).contains(&ms(tick.len())), "a tick is {:.2} ms", ms(tick.len()));
     assert_eq!(shapes::TICK_GAP, Duration::from_millis(55));
     assert!((shapes::TICK_SECOND - 0.79).abs() < f32::EPSILON);
-    assert!(shapes::TICKS_STRENGTH > 0.0 && shapes::TICKS_STRENGTH < 1.0, "a tick is not the full drive");
+    const { assert!(shapes::TICKS_STRENGTH > 0.0 && shapes::TICKS_STRENGTH < 1.0, "a tick is not the full drive") };
 }
 
 #[test]

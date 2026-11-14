@@ -393,3 +393,38 @@ fn started(phone: &Phone, program: &Program, ready: Ready, registers: Vec<String
     };
     Started { service, sockets: program.sockets.clone(), environment: program.environment.clone(), anew: false }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a weaver named `file` reaches its secure element through.
+    fn through(file: &str) -> Option<Through> {
+        WEAVERS.iter().find(|(ending, _)| file.ends_with(ending)).map(|(_, through)| *through)
+    }
+
+    #[test]
+    fn an_nxp_weaver_named_for_its_maker_alone_reaches_its_element_as_qualcomm_s_does() {
+        assert_eq!(
+            through("/odm/bin/hw/android.hardware.weaver-service.nxp"),
+            Some(Through::ElementService),
+            "OnePlus's weaver is named for the maker alone"
+        );
+        assert_eq!(through("/vendor/bin/hw/android.hardware.weaver-service.nxp-qti"), Some(Through::ElementService), "Qualcomm's own builds end in .nxp-qti");
+        assert_eq!(through("/odm/bin/hw/android.hardware.weaver-service.thales"), Some(Through::ElementService));
+        assert_eq!(
+            through("/odm/bin/hw/android.hardware.weaver-service"),
+            Some(Through::Own("vendor.goodix.hardware.secure_element_aidl.IGdxEse")),
+            "Goodix's program is named after no maker"
+        );
+        assert_eq!(through("/odm/bin/hw/android.hardware.weaver-service.unknown"), None, "a make the recovery does not know is not guessed at");
+    }
+
+    #[test]
+    fn a_vendor_program_finds_the_libraries_it_links_from_the_hardware_directory() {
+        assert!(VENDOR_LIBRARIES.contains(&"/vendor/lib64/hw"), "PLK110's eSE links libEseUtils.so from the hardware directory");
+        assert!(ODM_LIBRARIES.contains(&"/vendor/lib64/hw") && ODM_LIBRARIES.contains(&"/odm/lib64/hw"));
+        assert_eq!(VENDOR_LIBRARIES[..2], ["/system/lib64", "/vendor/lib64"], "the recovery's own binder and runtime libraries are searched first");
+        assert_eq!(ODM_LIBRARIES[..3], ["/system/lib64", "/vendor/lib64", "/odm/lib64"]);
+    }
+}

@@ -55,6 +55,9 @@ pub struct Settings {
     /// what this spares someone, and a network that is never joined keeps
     /// nothing either way.
     pub remember_wlan: bool,
+    /// The first screen is not drawn, so the pages come up at once. A file
+    /// that names none leaves it off: the first screen shows, as before.
+    pub no_splash: bool,
     pub install: Install,
     pub backup: Backup,
     pub logs: Logs,
@@ -133,6 +136,7 @@ impl Settings {
             vibration: state.vibration,
             file_transfer: state.file_transfer,
             remember_wlan: state.remember_wlan,
+            no_splash: state.no_splash,
             install: Install { check_signature: state.check_signature, keep_recovery: state.keep_recovery },
             backup: Backup {
                 parts: names(&state.backup, &PARTS),
@@ -192,6 +196,7 @@ impl Settings {
         }
         state.file_transfer = self.file_transfer;
         state.remember_wlan = self.remember_wlan;
+        state.no_splash = self.no_splash;
         state.check_signature = self.install.check_signature;
         state.keep_recovery = self.install.keep_recovery;
         state.backup = picked(&self.backup.parts, &PARTS);
@@ -211,7 +216,7 @@ impl Settings {
 
 /// The names of those of `all` that are `ticked`.
 fn names(ticked: &[bool], all: &[&str]) -> Vec<String> {
-    all.iter().zip(ticked).filter(|(_, &on)| on).map(|(name, _)| name.to_string()).collect()
+    all.iter().zip(ticked).filter(|&(_, &on)| on).map(|(name, _)| name.to_string()).collect()
 }
 
 /// Which of `all` the names `kept` tick.
@@ -372,6 +377,22 @@ mod tests {
         assert!(!state.remember_wlan);
         assert!(!Settings::read(&off.text()).unwrap().remember_wlan, "off is written as off");
         assert!(Settings::read(&Settings::default().text()).unwrap().remember_wlan, "and on as on");
+    }
+
+    #[test]
+    fn the_first_screen_shows_unless_the_file_turns_it_off() {
+        assert!(!Settings::default().no_splash, "a recovery that has kept nothing draws it");
+        let older = Settings::read(r#"{ "dark": true }"#).unwrap();
+        assert!(!older.no_splash, "a file written before the switch draws it");
+        let mut state = State::default();
+        older.apply(&mut state);
+        assert!(!state.no_splash);
+        let off = Settings { no_splash: true, ..Settings::default() };
+        off.apply(&mut state);
+        assert!(state.no_splash);
+        assert!(Settings::read(&off.text()).unwrap().no_splash, "off is written as off");
+        let json: serde_json::Value = serde_json::from_str(&off.text()).unwrap();
+        assert_eq!(json["no_splash"], true);
     }
 
     #[test]
